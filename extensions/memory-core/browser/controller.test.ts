@@ -14,7 +14,6 @@ function fixture(props = snapshot()) {
     return next.promise;
   });
   const refreshAgents = vi.fn();
-  const changed = vi.fn();
   const context = {
     props,
     signal: abort.signal,
@@ -22,7 +21,7 @@ function fixture(props = snapshot()) {
     refreshAgents,
     formatError: String,
   } as unknown as ControlUiSettingsContext;
-  const controller = createMemoryOverviewController(context, changed, () => "offline");
+  const controller = createMemoryOverviewController(context, vi.fn(), () => "offline");
   return { controller, pending, request, refreshAgents, abort };
 }
 const payload = (agentId: string): DoctorMemoryStatusPayload => ({
@@ -36,10 +35,9 @@ async function settle(f: ReturnType<typeof fixture>, index: number, agentId: str
 function expectState(
   f: ReturnType<typeof fixture>,
   status: ReturnType<typeof f.controller.read>["status"],
-  probingEmbeddings = false,
 ) {
-  expect(f.controller.read().status).toEqual(status);
-  expect(f.controller.read().probingEmbeddings).toBe(probingEmbeddings);
+  const { status: actual, probingEmbeddings } = f.controller.read();
+  expect([actual, probingEmbeddings]).toEqual([status, false]);
 }
 
 describe("Memory overview request ownership", () => {

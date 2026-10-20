@@ -4,7 +4,20 @@ import type {
   ControlUiSettingsView,
 } from "openclaw/plugin-sdk/control-ui";
 import { flush } from "solid-js";
-import { vi } from "vitest";
+import { expect, vi } from "vitest";
+
+export function expectText(node: Node, included: string[], excluded: string[] = []) {
+  for (const text of included) {
+    expect(node.textContent).toContain(text);
+  }
+  for (const text of excluded) {
+    expect(node.textContent).not.toContain(text);
+  }
+}
+export const findButton = (node: HTMLElement, label: RegExp) =>
+  [...node.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+    label.test(button.textContent?.trim() ?? ""),
+  );
 
 export type MutableSnapshot = {
   -readonly [K in keyof ControlUiSettingsSnapshot]: ControlUiSettingsSnapshot[K];

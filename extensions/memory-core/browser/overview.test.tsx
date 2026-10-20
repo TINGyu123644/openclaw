@@ -13,12 +13,13 @@ import {
   contextForTest,
   disposers,
   disposeTestViews,
+  expectText,
+  findButton,
   mountSettingsView,
   snapshot,
   waitForSolid,
 } from "./memory.test-support.ts";
 afterEach(disposeTestViews);
-// SDK component doubles expose content and callbacks, not host styling or artwork.
 function createTestComponents(): ControlUiSettingsComponents {
   function mount<P>(
     container: HTMLElement,
@@ -60,7 +61,6 @@ function createTestComponents(): ControlUiSettingsComponents {
         const pet = text("span");
         pet.dataset.testLobster = "";
         pet.dataset.reading = String(next.reading === true);
-        pet.dataset.sleeping = String(next.sleeping === true);
         return pet;
       }),
   };
@@ -71,20 +71,13 @@ import { settingsViews } from "./index.tsx";
 import { createMemoryOverview } from "./overview.tsx";
 
 type MemoryOverviewProps = Parameters<ReturnType<typeof createMemoryOverview>>[0];
-function expectText(container: HTMLElement, included: string[], excluded: string[] = []) {
-  for (const text of included) {
-    expect(container.textContent).toContain(text);
-  }
-  for (const text of excluded) {
-    expect(container.textContent).not.toContain(text);
-  }
-}
-const findButton = (container: HTMLElement, label: RegExp) =>
-  [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
-    label.test(button.textContent?.trim() ?? ""),
-  );
+const overviewContext = (props = snapshot()) =>
+  contextForTest(props, { components: createTestComponents() });
 
-function fixturePayload(): DoctorMemoryStatusPayload {
+type OverviewPayload = DoctorMemoryStatusPayload & {
+  dreaming: NonNullable<DoctorMemoryStatusPayload["dreaming"]>;
+};
+function fixturePayload(): OverviewPayload {
   const phaseBase = {
     enabled: true,
     cron: "0 3 * * *",
@@ -98,15 +91,9 @@ function fixturePayload(): DoctorMemoryStatusPayload {
     embeddingRuntime: {
       engine: "llama.cpp",
       state: "ready",
-      backend: "metal",
       buildInfo: "b10357 (689e227db)",
-      model: { id: "embeddinggemma-300m-qat-q8_0" },
-      endpoints: {
-        health: "ready",
-        models: "ready",
-        props: "ready",
-        metrics: "ready",
-      },
+      model: { id: "embedding-model" },
+      endpoints: { metrics: "ready" },
     },
     dreaming: {
       enabled: true,
@@ -149,9 +136,7 @@ function renderOverview(
   overrides: Partial<MemoryOverviewProps> = {},
 ) {
   const container = containerForTest();
-  const context = contextForTest(snapshot({ engine: engineSelection }), {
-    components: createTestComponents(),
-  });
+  const context = overviewContext(snapshot({ engine: engineSelection }));
   const MemoryOverview = createMemoryOverview(context, () => context.props);
   const props = {
     agentId: "main",
@@ -220,34 +205,22 @@ describe("MemoryOverview", () => {
     expect(container.querySelector('[data-reading="true"]')).toBeNull();
   });
 
-  it("reports every phase disabled when the global dream cycle is off", () => {
+  it.each([false, true])("reports phase eligibility with dream cycle enabled=%s", (enabled) => {
     const payload = fixturePayload();
-    if (payload.dreaming) {
-      payload.dreaming.enabled = false;
-    }
+    payload.dreaming.enabled = enabled;
+    payload.dreaming.phases.light.managedCronPresent = !enabled;
     const container = renderOverview({ kind: "ready", payload });
     const phaseRows = [...container.querySelectorAll(".settings-row")].filter((row) =>
-      /Light phase|Deep phase|REM phase/.test(row.textContent ?? ""),
+      (enabled ? /Light phase/ : /Light phase|Deep phase|REM phase/).test(row.textContent ?? ""),
     );
-
-    expect(phaseRows).toHaveLength(3);
-    expect(phaseRows.every((row) => row.textContent?.includes("Disabled"))).toBe(true);
-    expect(phaseRows.every((row) => !row.textContent?.includes("next "))).toBe(true);
-  });
-
-  it("reports an enabled phase without its managed cron as not scheduled", () => {
-    const payload = fixturePayload();
-    if (payload.dreaming) {
-      payload.dreaming.phases.light.managedCronPresent = false;
+    expect(phaseRows).toHaveLength(enabled ? 1 : 3);
+    for (const row of phaseRows) {
+      expectText(
+        row,
+        [enabled ? "Not scheduled" : "Disabled"],
+        enabled ? ["Enabled", "next "] : ["next "],
+      );
     }
-    const container = renderOverview({ kind: "ready", payload });
-    const lightRow = [...container.querySelectorAll(".settings-row")].find((row) =>
-      row.textContent?.includes("Light phase"),
-    );
-
-    expect(lightRow?.textContent).toContain("Not scheduled");
-    expect(lightRow?.textContent).not.toContain("Enabled");
-    expect(lightRow?.textContent).not.toContain("next ");
   });
 
   it("offers an inline embedding test before readiness has been checked", () => {
@@ -292,9 +265,7 @@ describe("MemoryOverview", () => {
 
   it("opens the Memories tab from the overview shortcut", () => {
     const onNavigate = vi.fn();
-    const container = renderOverview({ kind: "ready", payload: fixturePayload() }, undefined, {
-      onNavigate,
-    });
+    const container = renderOverview({ kind: "idle" }, undefined, { onNavigate });
 
     findButton(container, /Search memories/)?.click();
     expect(onNavigate).toHaveBeenCalledWith("memories");
@@ -302,14 +273,7 @@ describe("MemoryOverview", () => {
 });
 
 it("clears a roster error in the mounted plugin without issuing a Doctor request", async () => {
-  const context = contextForTest(
-    snapshot({
-      agentId: null,
-      agentsLoading: false,
-      agentsError: "roster failed",
-    }),
-    { components: createTestComponents() },
-  );
+  const context = overviewContext(snapshot({ agentId: null, agentsError: "roster failed" }));
   const { request } = context;
   const { container, update } = mountSettingsView(settingsViews[0]!, context);
   await waitForSolid(() => expect(container.textContent).toContain("roster failed"));
