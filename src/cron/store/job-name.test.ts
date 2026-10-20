@@ -4,30 +4,28 @@ import { DatabaseSync } from "node:sqlite";
 import { expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import * as stateReads from "../../state/openclaw-state-db-readonly.js";
-import { closeOpenClawStateDatabaseByPathAsync } from "../../state/openclaw-state-db.js";
+import { closeOpenClawStateDatabaseByPathAsync as closeDatabase } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { observeMainThreadSql } from "../../test-utils/main-thread-sql-spies.test-support.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { makeCronJob } from "../delivery.test-helpers.js";
 import { noteCronJobsStoreCommit, saveCronJobsStore, saveCronJobsStoreChanges } from "../store.js";
 import type { CronStoreFile } from "../types.js";
-import { prepareCronJobNameResolver } from "./job-name.js";
+import { prepareCronJobNameResolver as prepareNames } from "./job-name.js";
 
 function namedStore(name: string): CronStoreFile {
   return {
     version: 1,
     jobs: [
-      {
+      makeCronJob({
         id: "report",
         name,
         enabled: false,
         createdAtMs: 1,
         updatedAtMs: 1,
-        schedule: { kind: "every", everyMs: 60_000 },
         sessionTarget: "main",
-        wakeMode: "next-heartbeat",
         payload: { kind: "systemEvent", text: "Synthetic report" },
-        state: {},
-      },
+      }),
     ],
   };
 }
@@ -45,10 +43,7 @@ it("reads absent cron metadata in legacy shared state without repairing it", asy
     const before = await fs.readFile(databasePath);
     const sql = observeMainThreadSql();
     try {
-      const resolveName = await prepareCronJobNameResolver(
-        ["legacy"],
-        fixture.statePath("cron", "jobs.json"),
-      );
+      const resolveName = await prepareNames(["legacy"], fixture.statePath("cron", "jobs.json"));
       expect(resolveName("legacy")).toBeUndefined();
       sql.expectIdle();
       expect(await fs.readFile(databasePath)).toEqual(before);
@@ -64,12 +59,12 @@ it("retains committed names across saves without caller SQL and refuses invalida
     const store = namedStore("Original");
     await saveCronJobsStore(storePath, store);
     const sql = observeMainThreadSql();
-    let resolveName: Awaited<ReturnType<typeof prepareCronJobNameResolver>>;
+    let resolveName: Awaited<ReturnType<typeof prepareNames>>;
     try {
-      resolveName = await prepareCronJobNameResolver(["report", "missing"], storePath);
+      resolveName = await prepareNames(["report", "missing"], storePath);
       expect(resolveName("report")).toBe("Original");
       expect(resolveName("missing")).toBeUndefined();
-      expect((await prepareCronJobNameResolver(["report"]))("report")).toBe("Original");
+      expect((await prepareNames(["report"]))("report")).toBe("Original");
       expect(() => resolveName("unprepared")).toThrow(/refresh/);
       sql.expectIdle();
       const renamed = structuredClone(store);
@@ -82,24 +77,23 @@ it("retains committed names across saves without caller SQL and refuses invalida
       // Unknown/repair outcomes must discard the old name until an explicit read succeeds.
       noteCronJobsStoreCommit(storePath);
       expect(() => resolveName("report")).toThrow(/refresh/);
-      resolveName = await prepareCronJobNameResolver(["report"], storePath);
+      resolveName = await prepareNames(["report"], storePath);
       expect(resolveName("report")).toBeUndefined();
       sql.expectIdle();
     } finally {
       sql.restore();
     }
-    await closeOpenClawStateDatabaseByPathAsync(resolveOpenClawStateSqlitePath(fixture.env));
+    await closeDatabase(resolveOpenClawStateSqlitePath(fixture.env));
     await saveCronJobsStore(storePath, store);
     expect(() => resolveName("report")).toThrow(/admission|closing|changed/);
-    expect((await prepareCronJobNameResolver(["report"], storePath))("report")).toBe("Original");
+    expect((await prepareNames(["report"], storePath))("report")).toBe("Original");
   });
 });
 
 it("does not overwrite committed names with a delayed worker read", async () => {
   await withOpenClawTestState({ label: "cron-name-read-race" }, async (fixture) => {
     const storePath = fixture.statePath("cron", "jobs.json");
-    const store: CronStoreFile = { version: 1, jobs: [] };
-    await saveCronJobsStore(storePath, store);
+    await saveCronJobsStore(storePath, { version: 1, jobs: [] });
     const read = stateReads.executeExistingOpenClawStateRead;
     const observed = createDeferred();
     const release = createDeferred();
@@ -111,7 +105,7 @@ it("does not overwrite committed names with a delayed worker read", async () => 
         await release.promise;
         return reply;
       });
-    const pending = prepareCronJobNameResolver(["report"], storePath);
+    const pending = prepareNames(["report"], storePath);
     try {
       await awaitGateBeforeSettlement(
         observed.promise,

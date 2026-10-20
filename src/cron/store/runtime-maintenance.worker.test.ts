@@ -14,6 +14,21 @@ function maintain(database: ReturnType<typeof openOpenClawStateDatabase>, stateD
     maintainCronRunHistoryInWorker(database, { snapshot: { nowMs, protectedJobIds: [] } }),
   );
 }
+function trackReads(database: ReturnType<typeof openOpenClawStateDatabase>, receipts = false) {
+  return trackSqliteStatementExecutions(
+    requireNativeSqliteDatabase(database.db),
+    receipts ? ["history", "receipts"] : ["history"],
+    (sql) => {
+      if (!/^select\b/i.test(sql)) {
+        return null;
+      }
+      if (receipts && sql.includes('from "cron_run_receipts"')) {
+        return "receipts";
+      }
+      return sql.includes('from "task_runs"') ? "history" : null;
+    },
+  );
+}
 
 it.each(["empty", "retained", "expired"] as const)(
   "does not invalidate shared readers unless history maintenance changes rows: %s",
@@ -33,22 +48,9 @@ it.each(["empty", "retained", "expired"] as const)(
         const revision = readSqliteDatabaseWriteRevision(database.db);
         expect(revision).toBeTypeOf("number");
         const exec = vi.spyOn(database.db, "exec");
-        const reads = trackSqliteStatementExecutions(
-          requireNativeSqliteDatabase(database.db),
-          ["history", "receipts"],
-          (sql) => {
-            if (!/^select\b/i.test(sql)) {
-              return null;
-            }
-            if (sql.includes('from "cron_run_receipts"')) {
-              return "receipts";
-            }
-            return sql.includes('from "task_runs"') ? "history" : null;
-          },
-        );
+        const reads = trackReads(database, true);
         try {
-          const result = maintain(database, state.stateDir);
-          expect(result).toEqual({
+          expect(maintain(database, state.stateDir)).toEqual({
             outcome: {
               reconciled: 0,
               pruned: history === "expired" ? 1 : 0,
@@ -59,11 +61,9 @@ it.each(["empty", "retained", "expired"] as const)(
           expect(exec.mock.calls.some(([sql]) => /^\s*BEGIN\b/i.test(sql))).toBe(
             history === "expired",
           );
-          if (history === "expired") {
-            expect(readSqliteDatabaseWriteRevision(database.db)).not.toBe(revision);
-          } else {
-            expect(readSqliteDatabaseWriteRevision(database.db)).toBe(revision);
-          }
+          expect(Object.is(readSqliteDatabaseWriteRevision(database.db), revision)).toBe(
+            history !== "expired",
+          );
           expect(database.db.prepare("SELECT task_id FROM task_runs").all()).toEqual(
             history === "retained" ? [{ task_id: "terminal" }] : [],
           );
@@ -125,41 +125,35 @@ it("plans without retained payloads and reconciles with the full payloads of aff
       const staleDetail = detail({ note: "partial output" });
       insert("stale", "job-2", "run-2", "running", "partial", staleDetail);
       insert("unkeyed", "job-3", null, "running", "unkeyed partial", staleDetail);
-      const reads = trackSqliteStatementExecutions(
-        requireNativeSqliteDatabase(database.db),
-        ["history"],
-        (sql) => (/^select\b/i.test(sql) && sql.includes('from "task_runs"') ? "history" : null),
-      );
+      const reads = trackReads(database);
       try {
-        const result = maintain(database, state.stateDir);
-        expect(result.outcome).toMatchObject({ reconciled: 3, pruned: 0 });
+        expect(maintain(database, state.stateDir).outcome).toMatchObject({
+          reconciled: 3,
+          pruned: 0,
+        });
         // Planning plus one payload read for the reconciled runs; the retained payload stays put.
         expect(reads.textBytes.history).toBeLessThan(retainedPayload.length / 10);
         expect(reads.counts.history).toBe(2);
       } finally {
         reads.restore();
       }
-      const rows = database.db
-        .prepare(
-          "SELECT task_id, status, terminal_summary, detail_json FROM task_runs ORDER BY task_id",
-        )
-        .all() as Array<{
-        task_id: string;
-        status: string;
-        terminal_summary: string | null;
-        detail_json: string | null;
-      }>;
-      const byId = new Map(rows.map((row) => [row.task_id, row]));
-      expect(byId.get("marker")).toMatchObject({ status: "succeeded", terminal_summary: "done" });
-      expect(JSON.parse(byId.get("marker")?.detail_json ?? "null")).toEqual(
-        JSON.parse(outcomeDetail),
+      const byId = new Map(
+        database.db
+          .prepare(
+            "SELECT task_id, status, terminal_summary, detail_json FROM task_runs ORDER BY task_id",
+          )
+          .all()
+          .map((row) => [row.task_id, row]),
       );
+      const detailFor = (id: string) => JSON.parse(String(byId.get(id)?.detail_json ?? "null"));
+      expect(byId.get("marker")).toMatchObject({ status: "succeeded", terminal_summary: "done" });
+      expect(detailFor("marker")).toEqual(JSON.parse(outcomeDetail));
       for (const [id, summary] of [
         ["stale", "partial"],
         ["unkeyed", "unkeyed partial"],
       ] as const) {
         expect(byId.get(id)).toMatchObject({ status: "lost", terminal_summary: summary });
-        expect(JSON.parse(byId.get(id)?.detail_json ?? "null")).toEqual(JSON.parse(staleDetail));
+        expect(detailFor(id)).toEqual(JSON.parse(staleDetail));
       }
       expect(byId.get("retained")).toEqual({
         task_id: "retained",

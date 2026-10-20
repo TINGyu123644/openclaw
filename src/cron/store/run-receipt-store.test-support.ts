@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { getFileLockProcessStartTime } from "../../shared/pid-alive.js";
 import { runOpenClawStateWriteTransaction } from "../../state/openclaw-state-db.js";
 import { resolveCronJobConfigRevision } from "../config-revision.js";
+import { makeCronJob } from "../delivery.test-helpers.js";
 import type { CronJob } from "../types.js";
 import { cronStoreKey } from "./key.js";
 import { loadedCronStoreFromRows, loadCronRows } from "./row-codec.js";
@@ -31,19 +32,14 @@ export function makeCronRecoveryJob(id: string, startedAtMs: number): CronJob {
 }
 
 export function makeCronReceiptJob(id: string, agentId = "alpha"): CronJob {
-  return {
+  return makeCronJob({
     id,
     agentId,
     name: id,
-    enabled: true,
     createdAtMs: 1,
     updatedAtMs: 1,
-    schedule: { kind: "every", everyMs: 60_000 },
-    sessionTarget: "isolated",
-    wakeMode: "next-heartbeat",
     payload: { kind: "agentTurn", message: id },
-    state: {},
-  };
+  });
 }
 
 export function claimCronRunReceiptForTest(storePath: string, job: CronJob, startedAtMs: number) {
@@ -62,11 +58,9 @@ export function claimCronRunReceiptInDatabaseForTest(params: {
   database: Parameters<typeof claimCronRunReceiptInDatabase>[0]["database"];
   prepared: ReturnType<typeof prepareCronRunReceiptClaim>;
 }) {
-  const { handle: preparedHandle } = params.prepared;
   const handle = claimCronRunReceiptInDatabase({
     database: params.database,
-    handle: preparedHandle,
-    requestRunId: params.prepared.requestRunId,
+    ...params.prepared,
   });
   if (!handle) {
     throw new Error("Fixture cron receipt is already claimed");
