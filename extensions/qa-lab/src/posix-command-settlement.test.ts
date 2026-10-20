@@ -43,17 +43,11 @@ describe("POSIX command settlement", () => {
     vi.restoreAllMocks();
   });
 
-  function start(
-    params: {
-      executionTimeoutMs?: number;
-      forceKillAfterMs?: number;
-      onSettled?: (outcome: TestOutcome) => void;
-    } = {},
-  ) {
+  function start(params: { executionTimeoutMs?: number; forceKillAfterMs?: number } = {}) {
     const childFixture = createChild();
     const { child } = childFixture;
-    const settled = vi.fn(params.onSettled);
-    const controller = createQaPosixCommandSettlement({
+    const settled = vi.fn<(outcome: TestOutcome) => void>();
+    createQaPosixCommandSettlement({
       child,
       settlementFailureMessage: "settlement failed",
       executionTimeoutMs: params.executionTimeoutMs,
@@ -62,7 +56,21 @@ describe("POSIX command settlement", () => {
       processGroupId: 42,
       verifyAfterMs: 10,
     });
-    return { ...childFixture, controller, settled };
+    return { ...childFixture, settled };
+  }
+
+  function expectExit(settled: ReturnType<typeof start>["settled"], exitCode: number) {
+    expect(settled).toHaveBeenCalledOnce();
+    expect(settled).toHaveBeenCalledWith({ primary: { type: "exit", exitCode, signal: null } });
+  }
+
+  function expectDrainTimeout(fixture: ReturnType<typeof start>, primary: TestOutcome["primary"]) {
+    expect(fixture.stdoutDestroy).toHaveBeenCalledOnce();
+    expect(fixture.stderrDestroy).toHaveBeenCalledOnce();
+    expect(fixture.settled).toHaveBeenCalledWith({
+      settlementFailure: expect.objectContaining({ message: "stdio-drain-timeout" }),
+      primary,
+    });
   }
 
   it("keeps the exit tuple, resets only idle, and disposes listeners once", async () => {
@@ -75,12 +83,8 @@ describe("POSIX command settlement", () => {
     expect(settled).not.toHaveBeenCalled();
     child.emit("close", 7, null);
 
-    expect(settled).toHaveBeenCalledOnce();
-    expect(settled).toHaveBeenCalledWith({
-      primary: { type: "exit", exitCode: 7, signal: null },
-    });
-    expect(child.listenerCount("exit")).toBe(0);
-    expect(child.listenerCount("close")).toBe(0);
+    expectExit(settled, 7);
+    expect([child.listenerCount("exit"), child.listenerCount("close")]).toEqual([0, 0]);
     child.emit("close", 7, null);
     await vi.advanceTimersByTimeAsync(1_000);
     expect(settled).toHaveBeenCalledOnce();
@@ -94,17 +98,15 @@ describe("POSIX command settlement", () => {
     await vi.advanceTimersByTimeAsync(2_100);
     child.emit("close", 0, null);
 
-    expect(settled).toHaveBeenCalledOnce();
-    expect(settled).toHaveBeenCalledWith({
-      primary: { type: "exit", exitCode: 0, signal: null },
-    });
+    expectExit(settled, 0);
     expect(stdoutDestroy).not.toHaveBeenCalled();
     expect(stderrDestroy).not.toHaveBeenCalled();
   });
 
   it("caps active output at one second and destroys readers only after cleanup", async () => {
     processGroupAlive = true;
-    const { child, settled, stderrDestroy, stdoutDestroy } = start();
+    const fixture = start();
+    const { child, stdoutDestroy } = fixture;
     child.emit("exit", 0, null);
 
     for (let index = 0; index < 10; index += 1) {
@@ -120,12 +122,7 @@ describe("POSIX command settlement", () => {
     expect(processKill).toHaveBeenCalledWith(-42, "SIGKILL");
     await vi.advanceTimersByTimeAsync(10);
 
-    expect(stdoutDestroy).toHaveBeenCalledOnce();
-    expect(stderrDestroy).toHaveBeenCalledOnce();
-    expect(settled).toHaveBeenCalledWith({
-      settlementFailure: expect.objectContaining({ message: "stdio-drain-timeout" }),
-      primary: { type: "exit", exitCode: 0, signal: null },
-    });
+    expectDrainTimeout(fixture, { type: "exit", exitCode: 0, signal: null });
   });
 
   it("preserves the timeout primary when process-group signaling fails", async () => {
@@ -152,18 +149,13 @@ describe("POSIX command settlement", () => {
   });
 
   it("bounds stdio draining when a timeout cleans the group without close", async () => {
-    const { settled, stderrDestroy, stdoutDestroy } = start({ executionTimeoutMs: 100 });
+    const fixture = start({ executionTimeoutMs: 100 });
 
     await vi.advanceTimersByTimeAsync(1_099);
-    expect(settled).not.toHaveBeenCalled();
+    expect(fixture.settled).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
 
-    expect(stdoutDestroy).toHaveBeenCalledOnce();
-    expect(stderrDestroy).toHaveBeenCalledOnce();
-    expect(settled).toHaveBeenCalledWith({
-      settlementFailure: expect.objectContaining({ message: "stdio-drain-timeout" }),
-      primary: { type: "timeout" },
-    });
+    expectDrainTimeout(fixture, { type: "timeout" });
   });
 
   it("preserves a stream failure that follows a successful exit", async () => {

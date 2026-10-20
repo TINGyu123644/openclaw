@@ -1,4 +1,3 @@
-// QA Lab tests cover requested runtime execution order and canonical result identity.
 import { describe, expect, it, vi } from "vitest";
 import type { RuntimeId } from "./runtime-id.js";
 import {
@@ -19,48 +18,40 @@ function makeRuntimeParityCell(runtime: RuntimeId): RuntimeParityCell {
   };
 }
 
+function passingRunner() {
+  return vi.fn(async (runtime: RuntimeId) => ({
+    status: "pass" as const,
+    cell: makeRuntimeParityCell(runtime),
+  }));
+}
+
 describe("runtime parity execution order", () => {
-  it.each([
-    {
-      label: "the canonical default",
-      runtimePair: undefined,
-      expectedExecutionOrder: ["openclaw", "codex"],
-    },
-    {
-      label: "a reversed pair",
-      runtimePair: ["codex", "openclaw"],
-      expectedExecutionOrder: ["codex", "openclaw"],
-    },
-  ] satisfies Array<{
-    label: string;
+  it.each([{ runtimePair: undefined }, { runtimePair: ["codex", "openclaw"] }] satisfies Array<{
     runtimePair: [RuntimeId, RuntimeId] | undefined;
-    expectedExecutionOrder: [RuntimeId, RuntimeId];
   }>)(
-    "runs $label in its requested order with canonical result cells",
-    async ({ runtimePair, expectedExecutionOrder }) => {
-      const runCell = vi.fn(async (runtime: RuntimeId) => ({
-        status: "pass" as const,
-        cell: makeRuntimeParityCell(runtime),
-      }));
+    "runs pair %j in its requested order with canonical result cells",
+    async ({ runtimePair }) => {
+      const runCell = passingRunner();
       const result = await runRuntimeParityScenario({
         scenarioId: "runtime-execution-order",
         ...(runtimePair ? { runtimePair } : {}),
         runCell,
       });
 
-      expect(runCell.mock.calls.map(([runtime]) => runtime)).toEqual(expectedExecutionOrder);
+      expect(runCell.mock.calls.map(([runtime]) => runtime)).toEqual(
+        runtimePair ?? ["openclaw", "codex"],
+      );
       expect(Object.keys(result.cells)).toEqual(["openclaw", "codex"]);
-      expect(result.cells.openclaw).toMatchObject({ runtime: "openclaw", status: "pass" });
-      expect(result.cells.codex).toMatchObject({ runtime: "codex", status: "pass" });
+      expect(result.cells).toMatchObject({
+        openclaw: { runtime: "openclaw", status: "pass" },
+        codex: { runtime: "codex", status: "pass" },
+      });
       expect(result.drift).toBe("none");
     },
   );
 
   it("rejects duplicate runtimes before executing a parity cell", async () => {
-    const runCell = vi.fn(async (runtime: RuntimeId) => ({
-      status: "pass" as const,
-      cell: makeRuntimeParityCell(runtime),
-    }));
+    const runCell = passingRunner();
 
     await expect(
       runRuntimeParityScenario({
@@ -88,13 +79,11 @@ describe("runtime parity execution order", () => {
     });
 
     expect(executionOrder).toEqual(["codex", "openclaw"]);
-    expect(result.cells.openclaw.status).toBe("pass");
-    expect(result.cells.codex).toMatchObject({
-      runtime: "codex",
-      status: "fail",
-      details: "Codex scenario failed",
-    });
     expect(result).toMatchObject({
+      cells: {
+        openclaw: { status: "pass" },
+        codex: { runtime: "codex", status: "fail", details: "Codex scenario failed" },
+      },
       drift: "failure-mode",
       driftDetails: "runtime-pair cell status differs (pass vs fail)",
     });

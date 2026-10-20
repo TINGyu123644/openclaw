@@ -11,10 +11,7 @@ import { createTempDirHarness } from "./temp-dir.test-helper.js";
 
 const tempDirs = createTempDirHarness({ beforeCleanup: closeQaRuntimeStores });
 
-afterEach(() => {
-  resetPluginStateStoreForTests({ closeDatabase: false });
-});
-
+afterEach(() => resetPluginStateStoreForTests({ closeDatabase: false }));
 afterAll(() => tempDirs.cleanup());
 
 async function captureCacheTranscript(
@@ -27,11 +24,9 @@ async function captureCacheTranscript(
   const sessionKey = "agent:qa:runtime-parity-cache-miss";
   const env = { ...process.env, OPENCLAW_STATE_DIR: path.join(tempRoot, "state") };
   const storePath = resolveStorePath(undefined, { agentId, env });
+  const identity = { agentId, env, sessionKey, storePath };
   await upsertSessionEntry({
-    agentId,
-    env,
-    sessionKey,
-    storePath,
+    ...identity,
     entry: {
       sessionId,
       sessionFile: formatSqliteSessionFileMarker({ agentId, sessionId, storePath }),
@@ -40,11 +35,8 @@ async function captureCacheTranscript(
   });
   for (const [index, message] of messages.entries()) {
     await appendSessionTranscriptMessageByIdentity({
-      agentId,
-      env,
+      ...identity,
       sessionId,
-      sessionKey,
-      storePath,
       now: index + 1,
       message: message as never,
     });
@@ -67,6 +59,22 @@ function usage(
     totalTokens: inputTokens + 11 + (cache?.cacheRead ?? 0) + (cache?.cacheWrite ?? 0),
     ...cache,
   };
+}
+
+const ollamaUsage = { input: 22, output: 7, total: 29, cacheRead: 0, cacheWrite: 0 };
+const expectedOllamaUsage = { inputTokens: 22, outputTokens: 7, totalTokens: 29 };
+function ollamaTranscript(cacheTelemetry?: { state: "unavailable" }) {
+  return [
+    { role: "user", content: "Inspect cache telemetry." },
+    {
+      role: "assistant",
+      content: "done",
+      api: "ollama",
+      provider: "ollama",
+      model: "qwen3.5:9b",
+      usage: { ...ollamaUsage, ...(cacheTelemetry ? { cacheTelemetry } : {}) },
+    },
+  ];
 }
 
 describe("runtime parity prompt-cache diagnostics", () => {
@@ -107,30 +115,8 @@ describe("runtime parity prompt-cache diagnostics", () => {
   });
 
   it("treats Ollama adapter cache zeros as unavailable telemetry", async () => {
-    const cell = await captureCacheTranscript([
-      { role: "user", content: "Inspect cache telemetry." },
-      {
-        role: "assistant",
-        content: "done",
-        api: "ollama",
-        provider: "ollama",
-        model: "qwen3.5:9b",
-        usage: {
-          input: 22,
-          output: 7,
-          total: 29,
-          cacheRead: 0,
-          cacheWrite: 0,
-          cacheTelemetry: { state: "unavailable" },
-        },
-      },
-    ]);
-
-    expect(cell.usage).toEqual({
-      inputTokens: 22,
-      outputTokens: 7,
-      totalTokens: 29,
-    });
+    const cell = await captureCacheTranscript(ollamaTranscript({ state: "unavailable" }));
+    expect(cell.usage).toEqual(expectedOllamaUsage);
     expect(cell.cacheDiagnostics).toEqual({
       assistantTurns: 1,
       cacheTelemetryTurns: 0,
@@ -143,23 +129,8 @@ describe("runtime parity prompt-cache diagnostics", () => {
   });
 
   it("preserves unavailable cache telemetry from pre-marker Ollama transcripts", async () => {
-    const cell = await captureCacheTranscript([
-      { role: "user", content: "Inspect cache telemetry." },
-      {
-        role: "assistant",
-        content: "done",
-        api: "ollama",
-        provider: "ollama",
-        model: "qwen3.5:9b",
-        usage: { input: 22, output: 7, total: 29, cacheRead: 0, cacheWrite: 0 },
-      },
-    ]);
-
-    expect(cell.usage).toEqual({
-      inputTokens: 22,
-      outputTokens: 7,
-      totalTokens: 29,
-    });
+    const cell = await captureCacheTranscript(ollamaTranscript());
+    expect(cell.usage).toEqual(expectedOllamaUsage);
     expect(cell.cacheDiagnostics?.cacheTelemetryTurns).toBe(0);
   });
 
@@ -174,8 +145,10 @@ describe("runtime parity prompt-cache diagnostics", () => {
     expect(diagnostics.cacheMisses).toEqual([
       { turn: 2, inputTokens: 1_050, cacheRead: 0, cacheWrite: 0 },
     ]);
-    expect(diagnostics.cacheMissInputTokens).toBe(1_050);
-    expect(diagnostics.unmeasuredPostWarmTurns).toEqual([3, 4]);
-    expect(diagnostics.cacheHitTurns).toBe(1);
+    expect(diagnostics).toMatchObject({
+      cacheMissInputTokens: 1_050,
+      unmeasuredPostWarmTurns: [3, 4],
+      cacheHitTurns: 1,
+    });
   });
 });
