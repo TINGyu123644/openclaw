@@ -3,10 +3,7 @@ import path from "node:path";
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
 import { createControlUiSessionRow as sessionRow } from "../test-helpers/control-ui-session-fixtures.ts";
-import {
-  createControlUiE2eContextOptions,
-  createControlUiE2eSuite,
-} from "./control-ui-e2e-suite.test-support.ts";
+import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 import * as ui from "./session-management.compact.test-support.ts";
 import * as support from "./session-management.test-support.ts";
 
@@ -21,38 +18,33 @@ async function captureUiProof(page: Page, fileName: string) {
   if (!captureProof) {
     return;
   }
-  await mkdir(path.join(suite.artifactDir, "session-manager-history"), { recursive: true });
-  await page.screenshot({
-    fullPage: true,
-    path: path.join(suite.artifactDir, "session-manager-history", fileName),
-  });
+  const proofDirectory = path.join(suite.artifactDir, "session-manager-history");
+  await mkdir(proofDirectory, { recursive: true });
+  await page.screenshot({ fullPage: true, path: path.join(proofDirectory, fileName) });
 }
 
-suite.define(() => {
+suite.define(() =>
   it("covers session listing, filtering, transcript history, and archive feedback", async () => {
     const timestamp = Date.parse("2026-08-03T09:00:00.000Z");
     const main = sessionRow("agent:main:main", "Main", timestamp);
     const research = sessionRow("agent:main:research", "Research notes", timestamp - 60_000);
     const text = "The deployment history is ready to review.";
-    await suite.withPage(createControlUiE2eContextOptions(), async ({ page }) => {
+    const hit = {
+      messageId: "message-research",
+      role: "assistant",
+      score: 2.5,
+      sessionId: "research",
+      sessionKey: research.key,
+      snippet: text,
+      timestamp,
+    };
+    await ui.withSessionPage(suite, async (page) => {
       const gateway = await ui.installSessionRows(page, [main, research], {
         featureMethods: ["chat.metadata", "chat.startup", "sessions.patch", "sessions.search"],
         historyMessages: [{ role: "assistant", content: [{ type: "text", text }], timestamp }],
         methodResponses: {
           "sessions.patch": {},
-          "sessions.search": {
-            results: [
-              {
-                messageId: "message-research",
-                role: "assistant",
-                score: 2.5,
-                sessionId: "research",
-                sessionKey: research.key,
-                snippet: text,
-                timestamp,
-              },
-            ],
-          },
+          "sessions.search": { results: [hit] },
         },
         sessionKey: main.key,
       });
@@ -106,17 +98,12 @@ suite.define(() => {
       await captureUiProof(page, "02-session-history.png");
 
       await page.goto(`${suite.server.baseUrl}sessions`);
-      const actionRow = row(research.label);
-      await actionRow.waitFor({ state: "visible", timeout: 10_000 });
-      await ui.button(actionRow, "Open session menu", false).click();
+      await researchRow.waitFor({ state: "visible", timeout: 10_000 });
+      await ui.button(researchRow, "Open session menu", false).click();
       await support.activateSelfRemovingControl(
         ui.menuItem(page.locator("openclaw-session-menu"), "Archive session", false),
       );
-      const patch = await ui.sessionPatch(gateway, research.key, { archived: true });
-      expect(support.requireRecord(patch.params)).toMatchObject({
-        archived: true,
-        key: research.key,
-      });
+      await ui.sessionPatch(gateway, research.key, { archived: true });
       const toast = page
         .locator("openclaw-toast-host .app-toast")
         .filter({ hasText: "Session archived" });
@@ -124,5 +111,5 @@ suite.define(() => {
       await ui.visible(ui.button(toast, "Undo", false));
       await captureUiProof(page, "03-session-archive-feedback.png");
     });
-  });
-});
+  }),
+);

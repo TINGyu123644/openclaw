@@ -2,7 +2,6 @@ import { expect, it } from "vitest";
 import type { ChatPaneElement } from "../pages/chat/chat-pane-elements.ts";
 import { waitForControlUiRoute } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiSessionRow as sessionRow } from "../test-helpers/control-ui-session-fixtures.ts";
-import { createControlUiE2eContextOptions } from "./control-ui-e2e-suite.test-support.ts";
 import * as ui from "./session-management.compact.test-support.ts";
 import * as support from "./session-management.test-support.ts";
 import { waitForSettledFormControls } from "./settle.test-support.ts";
@@ -10,23 +9,17 @@ import { openHomeFullPage } from "./sidebar-navigation.test-support.ts";
 
 const suite = support.createSessionManagementE2eSuite();
 
-suite.define(() => {
+suite.define(() =>
   it("keeps the browser-local draft pencil visible on active Home beside activity", () =>
-    suite.withPage(
-      { ...createControlUiE2eContextOptions(), colorScheme: "dark" },
-      async ({ page }) => {
+    ui.withSessionPage(
+      suite,
+      async (page) => {
         const mainKey = "agent:main:main";
         const secondKey = "agent:main:draft-second";
+        const activeRun = { hasActiveRun: true, startedAt: 1, status: "running" };
         await ui.installSessionRows(
           page,
-          [
-            sessionRow(mainKey, "Main", 2, {
-              hasActiveRun: true,
-              startedAt: 1,
-              status: "running",
-            }),
-            sessionRow(secondKey, "Draft second", 1),
-          ],
+          [sessionRow(mainKey, "Main", 2, activeRun), sessionRow(secondKey, "Draft second", 1)],
           { sessionKey: mainKey },
         );
         await page.goto(support.controlUiSessionUrl(suite.server.baseUrl, mainKey));
@@ -50,10 +43,7 @@ suite.define(() => {
         const activityBox = await ui.bounds(activity);
         const draftBox = await ui.bounds(draft);
         // The compact badge overlays the corner, not the centered run glyph.
-        expect(activityBox.x + activityBox.width / 2).toBeCloseTo(
-          restingActivity.x + restingActivity.width / 2,
-          1,
-        );
+        expect(ui.centerX(activityBox)).toBeCloseTo(ui.centerX(restingActivity), 1);
         expect(ui.centerY(activityBox)).toBeCloseTo(ui.centerY(restingActivity), 1);
         expect(draftBox.x).toBeGreaterThanOrEqual(homeBox.x);
         expect(ui.right(draftBox)).toBeLessThanOrEqual(ui.right(homeBox));
@@ -88,13 +78,11 @@ suite.define(() => {
         await waitForSettledFormControls(page, [{ locator: composer, value: "" }]);
         await expect.poll(() => draft.count()).toBe(0);
         // Opening Home collapses the desktop list while keeping the rail available.
-        await page
-          .locator(".sidebar-rail")
-          .getByRole("button", { name: "Sessions", exact: true })
-          .click();
+        await ui.button(page.locator(".sidebar-rail"), "Sessions").click();
         await secondRow.getByRole("link").click();
         await ui.expectSessionPath(page, secondKey);
         await expect.poll(() => draft.count()).toBe(0);
       },
-    ));
-});
+      { colorScheme: "dark" },
+    )),
+);

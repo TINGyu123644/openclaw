@@ -1,36 +1,32 @@
 import { expect, it } from "vitest";
 import { createControlUiSessionRow as sessionRow } from "../test-helpers/control-ui-session-fixtures.ts";
-import { createControlUiE2eContextOptions } from "./control-ui-e2e-suite.test-support.ts";
 import * as ui from "./session-management.compact.test-support.ts";
 import * as support from "./session-management.test-support.ts";
 
 const suite = support.createSessionManagementE2eSuite();
 
-suite.define(() => {
+suite.define(() =>
   it("names a new group in the owned dialog instead of a browser prompt", () =>
-    suite.withPage(
-      { ...createControlUiE2eContextOptions(), colorScheme: "dark" },
-      async ({ page }) => {
+    ui.withSessionPage(
+      suite,
+      async (page) => {
         const nativeDialogs: string[] = [];
         page.on("dialog", (dialog) => {
           nativeDialogs.push(dialog.type());
           void dialog.dismiss();
         });
         const key = "agent:main:move-me";
-        const gateway = await ui.installSessionRows(
-          page,
-          [sessionRow(key, "Move me", Date.parse("2026-07-01T16:00:00.000Z"))],
-          {
-            featureMethods: [
-              "chat.metadata",
-              "chat.startup",
-              "sessions.groups.list",
-              "sessions.groups.put",
-              "sessions.patch",
-            ],
-            sessionKey: key,
-          },
-        );
+        const session = sessionRow(key, "Move me", 1);
+        const gateway = await ui.installSessionRows(page, [session], {
+          featureMethods: [
+            "chat.metadata",
+            "chat.startup",
+            "sessions.groups.list",
+            "sessions.groups.put",
+            "sessions.patch",
+          ],
+          sessionKey: key,
+        });
 
         async function openNewGroupDialog() {
           const row = ui.sessionRows(page)(key);
@@ -79,8 +75,7 @@ suite.define(() => {
         await ui.visible(page.locator('[data-session-section="category:Client work"]'));
         const putRequest = await gateway.waitForRequest("sessions.groups.put");
         expect(support.requireRecord(putRequest.params)).toMatchObject({ names: ["Client work"] });
-        const patched = await ui.sessionPatch(gateway, key, { category: "Client work" });
-        expect(support.requireRecord(patched.params)).toMatchObject({ category: "Client work" });
+        await ui.sessionPatch(gateway, key, { category: "Client work" });
         const categoryPatches = (await gateway.getRequests("sessions.patch")).filter(
           (request) => support.requireRecord(request.params).category === "Client work",
         );
@@ -88,5 +83,6 @@ suite.define(() => {
         expect(nativeDialogs).toEqual([]);
         await support.captureUiProof(suite, page, "new-group-created.png");
       },
-    ));
-});
+      { colorScheme: "dark" },
+    )),
+);

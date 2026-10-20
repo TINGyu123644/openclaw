@@ -1,7 +1,6 @@
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
 import { createControlUiSessionRow as sessionRow } from "../test-helpers/control-ui-session-fixtures.ts";
-import { createControlUiE2eContextOptions } from "./control-ui-e2e-suite.test-support.ts";
 import * as ui from "./session-management.compact.test-support.ts";
 import * as support from "./session-management.test-support.ts";
 import { chooseSidebarMenuOption, closeSidebarMenu } from "./sidebar-session-menu.test-support.ts";
@@ -12,42 +11,37 @@ async function setThemeMode(page: Page, mode: "dark" | "light"): Promise<void> {
   await page.emulateMedia({ colorScheme: mode });
   await page.evaluate((nextMode) => {
     const root = document.documentElement;
-    root.dataset.themeMode = nextMode;
-    root.dataset.themeResolved = nextMode;
+    Object.assign(root.dataset, { themeMode: nextMode, themeResolved: nextMode });
     root.style.colorScheme = nextMode;
   }, mode);
   await expect.poll(() => page.locator("html").getAttribute("data-theme-mode")).toBe(mode);
 }
 
-suite.define(() => {
+suite.define(() =>
   it("moves a categorized group session back to Groups", () =>
-    suite.withPage(
-      { ...createControlUiE2eContextOptions(), colorScheme: "light" },
-      async ({ page }) => {
-        const baseTime = Date.parse("2026-07-01T16:00:00.000Z");
+    ui.withSessionPage(
+      suite,
+      async (page) => {
         const key = "agent:main:done-group";
-        const gateway = await ui.installSessionRows(
-          page,
-          [
-            sessionRow("agent:main:main", "Main", baseTime),
-            sessionRow(key, "Completed launch", baseTime - 60_000, {
-              category: "Done",
-              kind: "group",
-            }),
+        const rows = [
+          sessionRow("agent:main:main", "Main", 2),
+          sessionRow(key, "Completed launch", 1, {
+            category: "Done",
+            kind: "group",
+          }),
+        ];
+        const gateway = await ui.installSessionRows(page, rows, {
+          methodResponses: { "sessions.patch": {} },
+          featureMethods: [
+            "chat.metadata",
+            "chat.startup",
+            "sessions.groups.list",
+            "sessions.groups.put",
+            "sessions.patch",
           ],
-          {
-            methodResponses: { "sessions.patch": {} },
-            featureMethods: [
-              "chat.metadata",
-              "chat.startup",
-              "sessions.groups.list",
-              "sessions.groups.put",
-              "sessions.patch",
-            ],
-            sessionGroups: ["Done"],
-            sessionKey: "agent:main:main",
-          },
-        );
+          sessionGroups: ["Done"],
+          sessionKey: "agent:main:main",
+        });
 
         await page.goto(`${suite.server.baseUrl}chat`);
         const done = page.locator('[data-session-section="category:Done"]');
@@ -78,12 +72,12 @@ suite.define(() => {
           sourcePosition: { x: 8, y: 8 },
           targetPosition: { x: 8, y: 8 },
         });
-        const patch = await ui.sessionPatch(gateway, key, { category: null });
-        expect(support.requireRecord(patch.params)).toMatchObject({ category: null, key });
+        await ui.sessionPatch(gateway, key, { category: null });
         await ui.visible(groups.locator(`[data-session-key="${key}"]`));
         await capture("after-light");
         await setThemeMode(page, "dark");
         await capture("after-dark");
       },
-    ));
-});
+      { colorScheme: "light" },
+    )),
+);

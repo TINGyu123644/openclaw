@@ -1,7 +1,7 @@
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
 import { createControlUiSessionRow as sessionRow } from "../test-helpers/control-ui-session-fixtures.ts";
-import { createControlUiE2eContextOptions } from "./control-ui-e2e-suite.test-support.ts";
+import * as ui from "./session-management.compact.test-support.ts";
 import * as support from "./session-management.test-support.ts";
 
 const suite = support.createSessionManagementE2eSuite();
@@ -11,18 +11,9 @@ const parentKey = "agent:main:flaky-connection";
 const childKey = "agent:main:markdown-tooltip";
 const otherKey = "agent:main:release-notes";
 
-const contextOptions = {
-  ...createControlUiE2eContextOptions(),
-  colorScheme: "light" as const,
-  viewport: { height: 720, width: 1280 },
-};
 async function openNestedParent(page: Page) {
-  const child = sessionRow(childKey, "Fix flaky markdown file tooltip", baseTime - 1_000, {
-    spawnedBy: parentKey,
-  });
-  const parent = sessionRow(parentKey, "Web UI flaky connection resilience", baseTime, {
-    childSessions: [childKey],
-  });
+  const child = sessionRow(childKey, "Child", baseTime - 1_000, { spawnedBy: parentKey });
+  const parent = sessionRow(parentKey, "Parent", baseTime, { childSessions: [childKey] });
   const other = sessionRow(otherKey, "Release notes draft", baseTime - 5_000);
   const gateway = await support.installMockGateway(page, {
     sessions: [parent, child, other],
@@ -50,14 +41,16 @@ async function openNestedParent(page: Page) {
   await modal.getByText("Archive session?", { exact: true }).waitFor();
   await modal
     .getByText(
-      '"Web UI flaky connection resilience" has a nested session. Archive only this one and it moves to the top level.',
+      '"Parent" has a nested session. Archive only this one and it moves to the top level.',
       { exact: true },
     )
     .waitFor();
   return { gateway, modal };
 }
 
-function archivedKeys(requests: readonly { params?: unknown }[]) {
+type Gateway = Awaited<ReturnType<typeof support.installMockGateway>>;
+async function archivedKeys(gateway: Gateway, methods = ["sessions.patch", "sessions.patchMany"]) {
+  const requests = (await Promise.all(methods.map((method) => gateway.getRequests(method)))).flat();
   return requests.flatMap((request) => {
     const params = support.requireRecord(request.params);
     if (Array.isArray(params.targets)) {
@@ -66,40 +59,35 @@ function archivedKeys(requests: readonly { params?: unknown }[]) {
     return params.archived === true ? [String(params.key)] : [];
   });
 }
-async function allArchivedKeys(gateway: Awaited<ReturnType<typeof support.installMockGateway>>) {
-  return archivedKeys([
-    ...(await gateway.getRequests("sessions.patch")),
-    ...(await gateway.getRequests("sessions.patchMany")),
-  ]);
-}
 
-suite.define(() => {
-  it("asks before archiving a session with nested sessions and archives only the parent", () =>
-    suite.withPage(contextOptions, async ({ page }) => {
-      const { gateway, modal } = await openNestedParent(page);
-      await support.captureUiProof(suite, page, "nested-archive-dialog.png");
-      await modal.getByRole("button", { name: "Archive this session", exact: true }).click();
-      await expect.poll(() => allArchivedKeys(gateway)).toEqual([parentKey]);
-      await page.getByText("Session archived", { exact: true }).waitFor();
-      await support.captureUiProof(suite, page, "nested-archive-this-session.png");
-    }));
-
-  it("archives the whole nested tree from the same dialog", () =>
-    suite.withPage(contextOptions, async ({ page }) => {
-      const { gateway, modal } = await openNestedParent(page);
-      await modal.getByRole("button", { name: "Archive 2 sessions", exact: true }).click();
-      await expect
-        .poll(async () => (await gateway.getRequests("sessions.patchMany")).length)
-        .toBe(1);
-      const [request] = await gateway.getRequests("sessions.patchMany");
-      expect(archivedKeys([request!])).toEqual([childKey, parentKey]);
-    }));
-
-  it("archives nothing when the dialog is cancelled", () =>
-    suite.withPage(contextOptions, async ({ page }) => {
-      const { gateway, modal } = await openNestedParent(page);
-      await modal.getByRole("button", { name: "Cancel", exact: true }).click();
-      await modal.locator("dialog[open]").waitFor({ state: "detached" });
-      expect(await allArchivedKeys(gateway)).toEqual([]);
-    }));
-});
+suite.define(() =>
+  it.each([
+    { action: "Archive this session", keys: [parentKey] },
+    { action: "Archive 2 sessions", keys: [childKey, parentKey] },
+    { action: "Cancel", keys: [] },
+  ])("nested archive dialog: $action", ({ action, keys }) =>
+    ui.withSessionPage(
+      suite,
+      async (page) => {
+        const { gateway, modal } = await openNestedParent(page);
+        const parentOnly = action === "Archive this session";
+        if (parentOnly) {
+          await support.captureUiProof(suite, page, "nested-archive-dialog.png");
+        }
+        await ui.button(modal, action).click();
+        if (action === "Cancel") {
+          await modal.locator("dialog[open]").waitFor({ state: "detached" });
+          expect(await archivedKeys(gateway)).toEqual(keys);
+        } else if (parentOnly) {
+          await expect.poll(() => archivedKeys(gateway)).toEqual(keys);
+          await page.getByText("Session archived", { exact: true }).waitFor();
+          await support.captureUiProof(suite, page, "nested-archive-this-session.png");
+        } else {
+          await expect.poll(() => ui.requestCount(gateway, "sessions.patchMany")).toBe(1);
+          expect(await archivedKeys(gateway, ["sessions.patchMany"])).toEqual(keys);
+        }
+      },
+      { colorScheme: "light", viewport: { height: 720, width: 1280 } },
+    ),
+  ),
+);
