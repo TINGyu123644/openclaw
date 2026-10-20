@@ -248,25 +248,24 @@ describe.skipIf(!connection)("PostgreSQL memory_search product flows", () => {
     });
   }
 
+  const paths = async (query: string, options?: Parameters<typeof search>[1]) =>
+    (await search(query, options)).results.map((hit) => hit.path);
+  const semantic = async (corpus: "memory" | "sessions" = "memory") =>
+    (await search("semantic-only", { agentId: "semantic", corpus, maxResults: 1 })).results;
+
   it("publishes body and path inserts, replacements and deletions before the next tool call; rebuild preserves hits", async () => {
     await write("main", "rhododendron-map.md", "Café cobalt orchid plans.");
     await sync();
     expect((await search("cafe cobalt")).results).toMatchObject([
       { path: "memory/rhododendron-map.md", snippet: "Café cobalt orchid plans." },
     ]);
-    expect((await search("rhododendron-map")).results.map((hit) => hit.path)).toEqual([
-      "memory/rhododendron-map.md",
-    ]);
+    expect(await paths("rhododendron-map")).toEqual(["memory/rhododendron-map.md"]);
     await write("main", "rhododendron-map.md", "Saffron replacement is published.");
     await sync();
     expect((await search("cobalt")).results).toEqual([]);
-    expect((await search("saffron")).results.map((hit) => hit.path)).toEqual([
-      "memory/rhododendron-map.md",
-    ]);
+    expect(await paths("saffron")).toEqual(["memory/rhododendron-map.md"]);
     await sync("main", true);
-    expect((await search("saffron")).results.map((hit) => hit.path)).toEqual([
-      "memory/rhododendron-map.md",
-    ]);
+    expect(await paths("saffron")).toEqual(["memory/rhododendron-map.md"]);
     await fs.unlink(path.join(workspaces.get("main")!, "memory", "rhododendron-map.md"));
     invalidate("main", path.join(workspaces.get("main")!, "memory", "rhododendron-map.md"));
     await sync();
@@ -288,19 +287,13 @@ describe.skipIf(!connection)("PostgreSQL memory_search product flows", () => {
       }),
     );
     await sync("other");
-    expect(
-      (await search("sourcefilter", { maxResults: 1 })).results.map((hit) => hit.path),
-    ).toEqual(["memory/source-target.md"]);
-    expect(
-      (await search("sourcefilter", { corpus: "sessions", maxResults: 1 })).results.map(
-        (hit) => hit.path,
-      ),
-    ).toEqual(["sessions/main/source-decoy.jsonl"]);
-    expect(
-      (await search("sourcefilter", { agentId: "other", maxResults: 1 })).results.map(
-        (hit) => hit.path,
-      ),
-    ).toEqual(["memory/agent-decoy.md"]);
+    expect(await paths("sourcefilter", { maxResults: 1 })).toEqual(["memory/source-target.md"]);
+    expect(await paths("sourcefilter", { corpus: "sessions", maxResults: 1 })).toEqual([
+      "sessions/main/source-decoy.jsonl",
+    ]);
+    expect(await paths("sourcefilter", { agentId: "other", maxResults: 1 })).toEqual([
+      "memory/agent-decoy.md",
+    ]);
   });
 
   it("publishes vector updates, rebuilds and deletions through scoped public retrieval", async () => {
@@ -308,14 +301,10 @@ describe.skipIf(!connection)("PostgreSQL memory_search product flows", () => {
     await write("semantic", "orthogonal.md", "unrelated material");
     await transcript("semantic", "nearest-decoy", "nearest-decoy");
     await sync("semantic");
-    const result = await search("semantic-only", { agentId: "semantic", maxResults: 1 });
-    expect(result.results).toMatchObject([
+    expect(await semantic()).toMatchObject([
       { path: "memory/target.md", score: expect.closeTo(0.56, 5) },
     ]);
-    expect(
-      (await search("semantic-only", { agentId: "semantic", corpus: "sessions", maxResults: 1 }))
-        .results,
-    ).toMatchObject([
+    expect(await semantic("sessions")).toMatchObject([
       // Session ranking applies age decay; exact cosine arithmetic has its own worker proof.
       { path: "sessions/semantic/nearest-decoy.jsonl", score: expect.closeTo(0.7, 3) },
     ]);
@@ -328,27 +317,21 @@ describe.skipIf(!connection)("PostgreSQL memory_search product flows", () => {
         score: expect.closeTo(0.7, 5),
       },
     ];
-    expect(
-      (await search("semantic-only", { agentId: "semantic", maxResults: 1 })).results,
-    ).toMatchObject(updated);
+    expect(await semantic()).toMatchObject(updated);
     await sync("semantic", true);
-    expect(
-      (await search("semantic-only", { agentId: "semantic", maxResults: 1 })).results,
-    ).toMatchObject(updated);
+    expect(await semantic()).toMatchObject(updated);
     const target = path.join(workspaces.get("semantic")!, "memory", "target.md");
     await fs.unlink(target);
     invalidate("semantic", target);
     await sync("semantic");
-    expect(
-      (await search("semantic-only", { agentId: "semantic", maxResults: 1 })).results,
-    ).toMatchObject([{ path: "memory/orthogonal.md", score: 0 }]);
+    expect(await semantic()).toMatchObject([{ path: "memory/orthogonal.md", score: 0 }]);
   });
 
   it("uses configured trigram body and path substring search at the public tool", async () => {
     await write("trigram", "rhododendron-notebook.md", "supercalifragilistic recorder");
     await sync("trigram");
     for (const query of ["fragilist", "dodend"]) {
-      expect((await search(query, { agentId: "trigram" })).results.map((hit) => hit.path)).toEqual([
+      expect(await paths(query, { agentId: "trigram" })).toEqual([
         "memory/rhododendron-notebook.md",
       ]);
     }
@@ -366,7 +349,7 @@ describe.skipIf(!connection)("PostgreSQL memory_search product flows", () => {
       "memory/rank-scattered.md",
     ]);
     expect(phrase.results[0]!.score).toBeGreaterThan(phrase.results[1]!.score);
-    expect((await search("cobalt ochre absenttoken")).results.map((hit) => hit.path)).toEqual([
+    expect(await paths("cobalt ochre absenttoken")).toEqual([
       "memory/rank-many.md",
       "memory/rank-fewer.md",
     ]);

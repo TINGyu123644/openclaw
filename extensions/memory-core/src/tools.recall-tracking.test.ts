@@ -1,3 +1,4 @@
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { clearMemoryPluginState } from "openclaw/plugin-sdk/memory-host-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetMemoryToolMockState } from "./memory-tool-manager.test-mocks.js";
@@ -27,14 +28,17 @@ const recallHit = {
   source: "memory" as const,
 };
 
-function recallTool(dreaming: { enabled: boolean; timezone?: string }, userTimezone?: string) {
+function recall(dreaming: { enabled: boolean; timezone?: string }, userTimezone?: string) {
   return createMemorySearchToolOrThrow({
     config: {
       agents: { defaults: { userTimezone }, entries: { main: {} } },
       plugins: { entries: { "memory-core": { config: { dreaming } } } },
     },
-  });
+  }).execute("recall", { query: "glacier" });
 }
+
+const expectHit = (result: Awaited<ReturnType<typeof recall>>) =>
+  expect(result.details).toMatchObject({ results: [{ path: "memory/2026-04-03.md" }] });
 
 describe("memory_search recall tracking", () => {
   beforeEach(() => {
@@ -45,24 +49,19 @@ describe("memory_search recall tracking", () => {
   });
 
   it("does not load recall tracking when dreaming is disabled", async () => {
-    const tool = recallTool({ enabled: false });
-
-    const result = await tool.execute("call_recall_disabled", { query: "glacier" });
-    expect(result.details).toMatchObject({ results: [{ path: "memory/2026-04-03.md" }] });
+    expectHit(await recall({ enabled: false }));
     expect(recallTrackingMock.recordShortTermRecalls).not.toHaveBeenCalled();
     expect(recallTrackingMock.moduleLoads).toBe(0);
   });
 
   it("preserves recall time and timezone across the first lazy import", async () => {
-    const tool = recallTool({ enabled: true, timezone: "Europe/London" }, "America/Los_Angeles");
-
     const recalledAt = Date.parse("2026-04-03T22:59:59.900Z");
     const clock = vi.spyOn(Date, "now").mockReturnValue(recalledAt);
     recallTrackingMock.onLoad.mockImplementationOnce(() => {
       clock.mockReturnValue(recalledAt + 200);
     });
     try {
-      await tool.execute("call_recall_timezone", { query: "glacier" });
+      await recall({ enabled: true, timezone: "Europe/London" }, "America/Los_Angeles");
       await vi.dynamicImportSettled();
 
       expect(recallTrackingMock.moduleLoads).toBe(1);
@@ -75,27 +74,18 @@ describe("memory_search recall tracking", () => {
   });
 
   it("does not block tool results on slow best-effort recall writes", async () => {
-    let resolveRecall: (() => void) | undefined;
-    recallTrackingMock.recordShortTermRecalls.mockImplementationOnce(
-      async () =>
-        await new Promise<void>((resolve) => {
-          resolveRecall = resolve;
-        }),
-    );
-
-    const tool = recallTool({ enabled: true });
-
+    const pending = createDeferred<void>();
+    recallTrackingMock.recordShortTermRecalls.mockImplementationOnce(() => pending.promise);
     const settled = vi.fn();
-    const execution = tool.execute("call_recall_non_blocking", { query: "glacier" });
+    const execution = recall({ enabled: true });
     const completion = execution.then(settled, settled);
     try {
       await vi.dynamicImportSettled();
       expect(recallTrackingMock.recordShortTermRecalls).toHaveBeenCalledTimes(1);
       expect(settled).toHaveBeenCalledTimes(1);
-      const result = await execution;
-      expect(result.details).toMatchObject({ results: [{ path: "memory/2026-04-03.md" }] });
+      expectHit(await execution);
     } finally {
-      resolveRecall?.();
+      pending.resolve();
       await completion;
     }
   });
