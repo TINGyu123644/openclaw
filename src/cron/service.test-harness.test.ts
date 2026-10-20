@@ -11,32 +11,21 @@ import {
   closeOpenClawAgentDatabasesAsync,
   openOpenClawAgentDatabase,
 } from "../state/openclaw-agent-db.js";
+import { cronTestJob } from "./service.fixture-builders.test-support.js";
 import { createCronStoreHarness, writeCronStoreSnapshot } from "./service.test-harness.js";
 import { loadCronStore } from "./store.js";
 
 const { makeStorePath } = createCronStoreHarness({ prefix: "openclaw-cron-harness-" });
 let previousStorePath: string | undefined;
 
-function testJob() {
-  return {
-    id: "job-1",
-    name: "Test job",
-    enabled: true,
-    createdAtMs: 1,
-    updatedAtMs: 1,
-    schedule: { kind: "every" as const, everyMs: 60_000 },
-    sessionTarget: "main" as const,
-    wakeMode: "next-heartbeat" as const,
-    payload: { kind: "systemEvent" as const, text: "tick" },
-    state: {},
-  };
-}
-
 describe("createCronStoreHarness", () => {
   it("tracks stores that callers do not explicitly clean", async () => {
     const store = await makeStorePath();
     previousStorePath = store.storePath;
-    await writeCronStoreSnapshot({ storePath: store.storePath, jobs: [testJob()] });
+    await writeCronStoreSnapshot({
+      storePath: store.storePath,
+      jobs: [cronTestJob({ id: "job-1" })],
+    });
     expect((await loadCronStore(store.storePath)).jobs).toHaveLength(1);
   });
 
@@ -50,7 +39,10 @@ describe("createCronStoreHarness", () => {
   it("settles case-owned session work before removing its directory and preserves sibling stores", async () => {
     const store = await makeStorePath();
     const sibling = await makeStorePath();
-    await writeCronStoreSnapshot({ storePath: store.storePath, jobs: [testJob()] });
+    await writeCronStoreSnapshot({
+      storePath: store.storePath,
+      jobs: [cronTestJob({ id: "job-1" })],
+    });
     const dir = path.dirname(path.dirname(store.storePath));
     const siblingDir = path.dirname(path.dirname(sibling.storePath));
     const sessionStorePath = path.join(dir, "cron", "sessions", "sessions.json");

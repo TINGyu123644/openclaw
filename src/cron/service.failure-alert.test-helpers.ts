@@ -1,4 +1,5 @@
-import { expect, type Mock, vi } from "vitest";
+import { expect, vi } from "vitest";
+import { cronTestDeps, cronTestInput } from "./service.fixture-builders.test-support.js";
 import { CronService } from "./service.js";
 import { setupCronServiceSuite } from "./service.test-harness.js";
 import type { CronJobCreate } from "./types.js";
@@ -15,20 +16,12 @@ export function createTelegramDelivery(): NonNullable<CronJobCreate["delivery"]>
   return { mode: "announce", channel: "telegram", to: "19098680" };
 }
 
-function createFailureAlertJob(
-  name: string,
-  overrides: Partial<CronJobCreate> = {},
-): CronJobCreate {
-  return {
-    name,
-    enabled: true,
-    schedule: { kind: "every", everyMs: 60_000 },
-    sessionTarget: "isolated",
-    wakeMode: "next-heartbeat",
-    payload: { kind: "agentTurn", message: "run report" },
-    ...overrides,
-  };
-}
+type FailureAlertParams = {
+  scheduler: CronServiceParams["scheduler"];
+  failureAlert?: FailureAlertConfig;
+  runResult?: IsolatedAgentRunResult;
+  useFallback?: boolean;
+};
 
 export function setupFailureAlertSuite() {
   const { logger: noopLogger, makeStorePath } = setupCronServiceSuite({
@@ -36,66 +29,54 @@ export function setupFailureAlertSuite() {
     baseTimeIso: "2026-01-01T00:00:00.000Z",
   });
 
-  async function withFailureAlertCron(
-    params: {
-      scheduler: CronServiceParams["scheduler"];
-      failureAlert?: FailureAlertConfig;
-      runResult?: IsolatedAgentRunResult;
-      useFallback?: boolean;
-    },
-    run: (context: {
-      cron: CronService;
-      enqueueSystemEvent: ReturnType<typeof vi.fn>;
-      requestHeartbeat: ReturnType<typeof vi.fn>;
-      sendCronFailureAlert: ReturnType<typeof vi.fn<SendCronFailureAlert>>;
-      runCronFailureRepair: Mock<RunCronFailureRepair>;
-      runIsolatedAgentJob: ReturnType<typeof vi.fn<RunIsolatedAgentJob>>;
-      runScriptJob: ReturnType<typeof vi.fn<RunScriptJob>>;
-      addJob: (name: string, overrides?: Partial<CronJobCreate>) => ReturnType<CronService["add"]>;
-    }) => Promise<void>,
-  ): Promise<void> {
+  async function createFixture(params: FailureAlertParams) {
     const store = await makeStorePath();
-    const sendCronFailureAlert = vi.fn<SendCronFailureAlert>(async () => undefined);
-    const enqueueSystemEvent = vi.fn();
-    const requestHeartbeat = vi.fn();
-    const runCronFailureRepair = vi.fn<RunCronFailureRepair>(async () => undefined);
     const runResult = params.runResult ?? {
       status: "error",
       error: "temporary upstream error",
     };
-    const runIsolatedAgentJob = vi.fn<RunIsolatedAgentJob>(async () => runResult);
-    const runScriptJob = vi.fn<RunScriptJob>(async () => runResult);
+    const mocks = {
+      sendCronFailureAlert: vi.fn<SendCronFailureAlert>(async () => undefined),
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeat: vi.fn(),
+      runCronFailureRepair: vi.fn<RunCronFailureRepair>(async () => undefined),
+      runIsolatedAgentJob: vi.fn<RunIsolatedAgentJob>(async () => runResult),
+      runScriptJob: vi.fn<RunScriptJob>(async () => runResult),
+    };
+    const { sendCronFailureAlert, ...deps } = mocks;
     const cron = new CronService({
+      ...cronTestDeps({ storePath: store.storePath }),
       scheduler: params.scheduler,
-      nowMs: () => Date.now(),
-      storePath: store.storePath,
-      cronEnabled: true,
       ...(params.failureAlert === undefined
         ? {}
         : { cronConfig: { failureAlert: params.failureAlert } }),
       log: noopLogger,
-      enqueueSystemEvent,
-      requestHeartbeat,
-      runIsolatedAgentJob,
-      runScriptJob,
-      runCronFailureRepair,
+      ...deps,
       ...(params.useFallback ? {} : { sendCronFailureAlert }),
     });
+    return {
+      cron,
+      ...mocks,
+      addJob: (name: string, overrides?: Partial<CronJobCreate>) =>
+        cron.add({
+          ...cronTestInput(),
+          name,
+          payload: { kind: "agentTurn", message: "run report" },
+          ...overrides,
+        }),
+    };
+  }
 
-    await cron.start();
+  async function withFailureAlertCron(
+    params: FailureAlertParams,
+    run: (context: Awaited<ReturnType<typeof createFixture>>) => Promise<void>,
+  ): Promise<void> {
+    const fixture = await createFixture(params);
+    await fixture.cron.start();
     try {
-      await run({
-        cron,
-        enqueueSystemEvent,
-        requestHeartbeat,
-        sendCronFailureAlert,
-        runCronFailureRepair,
-        runIsolatedAgentJob,
-        runScriptJob,
-        addJob: async (name, overrides) => await cron.add(createFailureAlertJob(name, overrides)),
-      });
+      await run(fixture);
     } finally {
-      cron.stop();
+      fixture.cron.stop();
     }
   }
 
@@ -129,9 +110,5 @@ export function expectAlertTextContaining(
   callIndex?: number,
 ): void {
   const alert = alertCallArg(sendCronFailureAlert, callIndex);
-  expect(typeof alert.text).toBe("string");
-  if (typeof alert.text !== "string") {
-    throw new Error("expected failure alert text");
-  }
-  expect(alert.text).toContain(text);
+  expect(alert.text).toEqual(expect.stringContaining(text));
 }

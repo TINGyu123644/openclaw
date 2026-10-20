@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
-import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
   loadRunCronIsolatedAgentTurn,
@@ -10,16 +9,12 @@ import {
   resolveCronPayloadOutcomeMock,
   runEmbeddedAgentMock,
 } from "./isolated-agent/run.test-harness.js";
+import { cronTestDeps, cronTestInput } from "./service.fixture-builders.test-support.js";
 import { CronService } from "./service.js";
-import { createNoopLogger } from "./service.test-harness.js";
+import type { CronServiceDeps } from "./service/state.js";
 import { loadCronStore } from "./store.js";
 
 const runCronIsolatedAgentTurn = await loadRunCronIsolatedAgentTurn();
-
-type CronServiceParams = ConstructorParameters<typeof CronService>[0];
-type SendCronFailureAlertParams = Parameters<
-  NonNullable<CronServiceParams["sendCronFailureAlert"]>
->[0];
 
 describe("CronService silent failure alerts", { concurrent: false }, () => {
   beforeEach(() => {
@@ -47,22 +42,16 @@ describe("CronService silent failure alerts", { concurrent: false }, () => {
           agents: { defaults: { model: `${modelRef.provider}/${modelRef.model}` } },
         };
         setRuntimeConfigSnapshot(cfg);
-        const sendCronFailureAlert = vi.fn(
-          async (_params: SendCronFailureAlertParams) => undefined,
+        const sendCronFailureAlert = vi.fn<NonNullable<CronServiceDeps["sendCronFailureAlert"]>>(
+          async () => undefined,
         );
         const storePath = state.path("cron", "jobs.json");
         const cron = new CronService({
-          scheduler: createTestGatewayScheduler(),
-          nowMs: () => Date.now(),
-          storePath,
-          cronEnabled: true,
+          ...cronTestDeps({ storePath }),
           cronConfig: {
             triggers: { enabled: true },
             failureAlert: { enabled: true, after: 1, cooldownMs: 0 },
           },
-          log: createNoopLogger(),
-          enqueueSystemEvent: vi.fn(),
-          requestHeartbeat: vi.fn(),
           sendCronFailureAlert,
           runIsolatedAgentJob: async (runParams) =>
             await runCronIsolatedAgentTurn({
@@ -75,11 +64,8 @@ describe("CronService silent failure alerts", { concurrent: false }, () => {
         try {
           await cron.start();
           const job = await cron.add({
+            ...cronTestInput(),
             name: "mount check",
-            enabled: true,
-            schedule: { kind: "every", everyMs: 60_000 },
-            sessionTarget: "isolated",
-            wakeMode: "next-heartbeat",
             payload: {
               kind: "agentTurn",
               message: "check mount",
@@ -93,9 +79,11 @@ describe("CronService silent failure alerts", { concurrent: false }, () => {
           const persisted = (await loadCronStore(storePath)).jobs.find(
             (candidate) => candidate.id === job.id,
           );
-          expect(persisted?.state.lastRunStatus).toBe("error");
-          expect(persisted?.state.lastError).toContain("Bash failed");
-          expect(persisted?.state.consecutiveErrors).toBe(1);
+          expect(persisted?.state).toMatchObject({
+            lastRunStatus: "error",
+            lastError: expect.stringContaining("Bash failed"),
+            consecutiveErrors: 1,
+          });
           expect(persisted?.state.lastFailureAlertAtMs).toBeDefined();
           expect(sendCronFailureAlert).toHaveBeenCalledOnce();
           expect(sendCronFailureAlert.mock.calls[0]?.[0].payload.text).toContain(

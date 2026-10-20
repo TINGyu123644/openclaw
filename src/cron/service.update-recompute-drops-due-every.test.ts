@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   createGatewaySchedulerClock,
   createTestGatewayScheduler,
 } from "../test-utils/gateway-scheduler-clock.js";
+import { cronTestDeps, cronTestInput } from "./service.fixture-builders.test-support.js";
 import type { CronService } from "./service.js";
 import {
   createCronServiceWithStateForTest,
@@ -30,24 +31,19 @@ async function withScheduledJob(
   const joinTurns = async () => {
     const failures: unknown[] = [];
     for (const turn of turns) {
-      try {
-        await turn;
-      } catch (error) {
+      await turn.catch((error) => {
         failures.push(error);
-      }
+      });
     }
     if (failures.length) {
       throw new AggregateError(failures, "Cron fixture scheduler failed");
     }
   };
   const { cron, state } = createCronServiceWithStateForTest({
+    ...cronTestDeps({ storePath }),
     scheduler: createTestGatewayScheduler(clock.clock),
-    storePath,
-    cronEnabled: true,
+    nowMs: () => clock.clock.now(),
     log: logger,
-    enqueueSystemEvent: vi.fn(),
-    requestHeartbeat: vi.fn(),
-    runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     onEvent: finished.onEvent,
     runSchedulerOwned: (run) => {
       const turn = run();
@@ -58,11 +54,9 @@ async function withScheduledJob(
   try {
     await cron.start();
     let job = await cron.add({
+      ...cronTestInput(),
       name: "scheduled job",
-      enabled: true,
       schedule,
-      sessionTarget: "isolated",
-      wakeMode: "next-heartbeat",
       payload: { kind: "agentTurn", message: "tick" },
     });
     if (schedule.kind === "every") {
