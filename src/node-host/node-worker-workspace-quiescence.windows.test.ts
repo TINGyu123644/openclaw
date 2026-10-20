@@ -27,23 +27,8 @@ afterEach(() => {
 describe.runIf(process.platform === "win32")("Windows node-host quiescence", () => {
   it("retains one SQLite helper across foreground Job cleanup and fresh-nonce turns, then joins its retirement", async () => {
     const root = fs.realpathSync(tempDirs.make("node-quiescence-win-"));
-    const identity = {
-      gatewayNamespace: "gateway-windows",
-      environmentId: "environment-windows",
-      sessionId: "session-windows",
-      generation: 1,
-    };
-    const hash = (value: string, size: number) =>
-      createHash("sha256").update(value).digest("hex").slice(0, size);
-    const home = path.join(
-      root,
-      identity.gatewayNamespace,
-      "workspaces",
-      hash(identity.environmentId, 16),
-      hash(identity.sessionId, 32),
-    );
-    const workspaceDir = path.join(home, "1");
-    fs.mkdirSync(workspaceDir, { recursive: true });
+    const gatewayNamespace = "win";
+    const identity = { gatewayNamespace, environmentId: "env", sessionId: "s1", generation: 1 };
     const runtime = new NodeWorkerWorkspaceRuntime({
       root,
       env: {
@@ -56,6 +41,12 @@ describe.runIf(process.platform === "win32")("Windows node-host quiescence", () 
         NODE_DISABLE_COMPILE_CACHE: "1",
       },
     });
+    const { workspaceDir } = await runtime.exec({
+      ...identity,
+      argv: [path.basename(process.execPath), "-e", ""],
+    });
+    const home = path.dirname(workspaceDir);
+    const workspaceKey = createHash("sha256").update(workspaceDir).digest("hex");
     const command = (operation: NodeWorkerWorkspaceQuiescenceInput) =>
       runtime.exec(
         parseNodeWorkerWorkspaceExecInput(
@@ -67,18 +58,14 @@ describe.runIf(process.platform === "win32")("Windows node-host quiescence", () 
         ),
       );
     const readLease = () => {
-      const database = new DatabaseSync(
+      using database = new DatabaseSync(
         path.join(home, ".openclaw-worker", "quiescence", "windows-shared-host.sqlite"),
         { readOnly: true },
       );
-      try {
-        const row = database
-          .prepare("SELECT lease_json FROM workspace_leases WHERE workspace_key = ?")
-          .get(hash(workspaceDir, 64));
-        return row ? JSON.parse(String(row.lease_json)) : undefined;
-      } finally {
-        database.close();
-      }
+      const row = database
+        .prepare("SELECT lease_json FROM workspace_leases WHERE workspace_key = ?")
+        .get(workspaceKey);
+      return row ? JSON.parse(String(row.lease_json)) : undefined;
     };
     const acquire = (nonce: string) => command({ action: "acquire", nonce, timeoutMs: 30_000 });
     const renew = (nonce: string) =>
@@ -153,13 +140,7 @@ child.once("message", () => {
       expect(spawned).toHaveBeenCalledTimes(controlSpawns);
       expect(helper.exitCode).toBeNull();
       await runtime.applyRetainSnapshot(
-        {
-          version: 1,
-          gatewayNamespace: identity.gatewayNamespace,
-          controllerId: "windows-watchdog-proof",
-          sequence: 1,
-          retain: [],
-        },
+        { version: 1, gatewayNamespace, controllerId: "proof", sequence: 1, retain: [] },
         async () => [],
       );
       expect(fs.existsSync(workspaceDir)).toBe(false);

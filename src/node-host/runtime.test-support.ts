@@ -72,14 +72,7 @@ vi.mock("./skills.js", () => ({ scanNodeHostedSkills: vi.fn(() => []) }));
 const { prepareNodeHostRuntime } = await import("./runtime.js");
 export { mocks };
 
-export const frame = {
-  id: "invoke-1",
-  nodeId: "node-1",
-  command: "test.duplex",
-  paramsJSON: null,
-  timeoutMs: 0,
-  idempotencyKey: null,
-};
+export const frame = { id: "invoke-1", nodeId: "node-1", command: "test.duplex", paramsJSON: null };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -113,28 +106,19 @@ export async function startRuntime(
   return prepared.start({ client });
 }
 
-export function holdInvoke(onCommand?: (io: OpenClawPluginNodeHostCommandIo) => void) {
-  let io: OpenClawPluginNodeHostCommandIo | undefined;
-  let signal: AbortSignal | undefined;
+export function holdInvoke() {
+  let context: { pluginCommandIo?: OpenClawPluginNodeHostCommandIo; signal?: AbortSignal } = {};
   const held = createDeferred();
   mocks.handleInvoke.mockImplementationOnce(async (...args: unknown[]) => {
-    const runtime = args[4] as {
-      pluginCommandIo?: OpenClawPluginNodeHostCommandIo;
-      signal?: AbortSignal;
-    };
-    io = runtime.pluginCommandIo;
-    signal = runtime.signal;
-    if (io) {
-      onCommand?.(io);
-    }
+    context = args[4] as typeof context;
     await held.promise;
   });
   return {
     get io() {
-      return io;
+      return context.pluginCommandIo;
     },
     get signal() {
-      return signal;
+      return context.signal;
     },
     release: () => held.resolve(),
   };
