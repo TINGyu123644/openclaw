@@ -8,7 +8,10 @@ import { projectCronRunHistoryPage } from "../run-history.js";
 import { saveCronStore } from "../store.js";
 import type { CronJob, CronJobPatch } from "../types.js";
 import { readCronRunHistoryCandidates, readCronRunHistoryRecords } from "./read-only.js";
-import type { CronRunQueueOperations, CronRunRequestContext } from "./run-queue.types.js";
+import type {
+  CronRunQueueOperations,
+  CronRunRequestContext as RequestContext,
+} from "./run-queue.types.js";
 import type { CronRunReceiptHandle } from "./run-receipt.types.js";
 import { createCronScheduledRunId } from "./run-request-id.js";
 
@@ -82,26 +85,17 @@ export async function queueStore(
       const context = getContext();
       const result = await executeExistingOpenClawStateRead(
         { path: context.admission.databasePath, env: context.environment },
-        {
-          type: "cron.currentReceipt",
-          handle,
-          includeJob: false,
-          includeAvailability: false,
-        },
+        { type: "cron.currentReceipt", handle, includeJob: false, includeAvailability: false },
         { context },
       );
-      if (!result?.ok || result.type !== "cron.currentReceipt") {
+      if (!result) {
         throw new Error("Cron receipt read failed");
       }
       return result.facts.receipt;
     },
     request: (requests: QueueRequest[], nowMs = now) =>
       run("cron.requestRuns", { storeKey, nowMs, requests }),
-    drain: (
-      requests: CronRunRequestContext[] = [],
-      maxConcurrentRuns = 1,
-      schedulingPaused = false,
-    ) =>
+    drain: (requests: RequestContext[] = [], maxConcurrentRuns = 1, schedulingPaused = false) =>
       run("cron.drainQueue", {
         storeKey,
         nowMs: now + 1,

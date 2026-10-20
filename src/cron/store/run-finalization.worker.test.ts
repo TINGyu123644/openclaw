@@ -22,8 +22,7 @@ it("commits execution, delivery, and history once despite an owner edit and a du
     await saveCronStore(storePath, { version: 1, jobs: [edited] });
     const database = openOpenClawStateDatabase();
     const row = (sql: string, id: string) => database.db.prepare(sql).get(id);
-    // Clock skew can make the pending result older than the retained history.
-    // Finalization must protect its stored marker even after clearing the live job.
+    // Clock-skewed history must not evict the pending marker, even after clearing the live job.
     const seedHistory = database.db.prepare(`
       INSERT INTO cron_run_receipts (
         receipt_id, cursor_id, store_key, job_id, config_revision, agent_id, status,
@@ -68,16 +67,12 @@ it("commits execution, delivery, and history once despite an owner edit and a du
     `);
     expect(() => finalize("ok")).toThrow("synthetic history failure");
     const receiptStatus = () =>
-      row("SELECT status FROM cron_run_receipts WHERE receipt_id = ?", receipt.receiptId);
+      row("SELECT status FROM cron_run_receipts WHERE receipt_id = ?", receipt.receiptId)?.status;
     expect({
       receipt: receiptStatus(),
-      history: row("SELECT COUNT(*) AS count FROM task_runs WHERE source_id = ?", job.id),
+      history: row("SELECT COUNT(*) AS count FROM task_runs WHERE source_id = ?", job.id)?.count,
       marker: (await loadCronStore(storePath)).jobs[0]?.state.runningReceiptId,
-    }).toEqual({
-      receipt: { status: "running" },
-      history: { count: 0 },
-      marker: receipt.receiptId,
-    });
+    }).toEqual({ receipt: "running", history: 0, marker: receipt.receiptId });
     database.db.exec("DROP TRIGGER fail_cron_history");
     expect(finalize("ok").outcome.eventPlans).toHaveLength(1);
     expect(finalize("error").outcome.eventPlans).toHaveLength(0);
@@ -86,7 +81,7 @@ it("commits execution, delivery, and history once despite an owner edit and a du
       agentId: edited.agentId,
       state: { lastRunStatus: "ok", lastDelivered: true, lastDeliveryStatus: "delivered" },
     });
-    expect(receiptStatus()).toEqual({ status: "ok" });
+    expect(receiptStatus()).toBe("ok");
     expect(row("SELECT COUNT(*) AS count FROM cron_run_receipts WHERE job_id = ?", job.id)).toEqual(
       { count: 64 },
     );

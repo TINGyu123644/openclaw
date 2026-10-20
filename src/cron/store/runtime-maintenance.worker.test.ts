@@ -84,47 +84,37 @@ it("plans without retained payloads and reconciles with the full payloads of aff
       const startedAt = nowMs - day;
       const detail = (fields: Record<string, unknown>) =>
         JSON.stringify({ kind: "cron-run", storeKey: "store", status: "ok", ...fields });
-      const statement = database.db.prepare(
+      const insert = database.db.prepare(
         "INSERT INTO task_runs (task_id, runtime, source_id, run_id, owner_key, scope_kind, task, delivery_status, notify_policy, created_at, started_at, ended_at, last_event_at, status, terminal_summary, detail_json) VALUES (?, 'cron', ?, ?, '', 'system', 'job', 'not_applicable', 'silent', ?, ?, ?, ?, ?, ?, ?)",
       );
-      const insert = (
-        id: string,
-        jobId: string,
-        runId: string | null,
-        status: string,
-        summary: string | null,
-        payload: string,
-        createdAt = startedAt,
-      ) =>
-        statement.run(
-          id,
-          jobId,
-          runId,
-          createdAt,
-          startedAt,
-          status === "running" ? null : startedAt + 1,
-          status === "running" ? startedAt : null,
-          status,
-          summary,
-          payload,
-        );
+      const terminal = [startedAt, startedAt + 1, null, "succeeded"] as const;
+      const active = [startedAt, null, startedAt, "running"] as const;
       const retainedPayload = "x".repeat(2_000_000);
       const outcomeDetail = detail({ summary: "done", output: "y".repeat(1_000) });
-      insert(
+      insert.run(
         "retained",
         "other",
         "run-0",
-        "succeeded",
+        startedAt,
+        ...terminal,
         retainedPayload,
         detail({ output: retainedPayload }),
       );
       // The finished outcome precedes its stale active marker, so recovery adopts its payload.
-      insert("outcome", "job", "run-1", "succeeded", "done", outcomeDetail);
-      insert("marker", "job", "run-1", "running", null, detail({ marker: true }), startedAt + 2);
+      insert.run("outcome", "job", "run-1", startedAt, ...terminal, "done", outcomeDetail);
+      insert.run(
+        "marker",
+        "job",
+        "run-1",
+        startedAt + 2,
+        ...active,
+        null,
+        detail({ marker: true }),
+      );
       // Without a recovery candidate a stale active row becomes lost and keeps its own payload.
       const staleDetail = detail({ note: "partial output" });
-      insert("stale", "job-2", "run-2", "running", "partial", staleDetail);
-      insert("unkeyed", "job-3", null, "running", "unkeyed partial", staleDetail);
+      insert.run("stale", "job-2", "run-2", startedAt, ...active, "partial", staleDetail);
+      insert.run("unkeyed", "job-3", null, startedAt, ...active, "unkeyed partial", staleDetail);
       const reads = trackReads(database);
       try {
         expect(maintain(database, state.stateDir).outcome).toMatchObject({

@@ -1,38 +1,35 @@
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import * as sqliteQuery from "../../infra/kysely-sync.js";
 import {
   openOpenClawStateDatabase,
-  runOpenClawStateWriteTransaction,
+  runOpenClawStateWriteTransaction as write,
 } from "../../state/openclaw-state-db.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { CronService } from "../service.js";
 import { setupCronServiceSuite } from "../service.test-harness.js";
-import type { CronServiceDeps } from "../service/state.js";
 import { loadCronStore } from "../store.js";
 import { cronStoreKey } from "./key.js";
-import { finishCronRunReceiptInDatabase } from "./run-receipt-store.js";
+import { finishCronRunReceiptInDatabase as finishReceipt } from "./run-receipt-store.js";
 import {
   claimCronRunReceiptForTest,
   inspectActiveCronRunReceipt,
-  finishCronRunReceiptAsync,
+  finishCronRunReceiptAsync as finish,
 } from "./run-receipt-store.test-support.js";
 import { prepareCronRunReceiptWriteSchema } from "./run-receipt-write-admission.js";
 
 const { logger, makeStorePath } = setupCronServiceSuite({ prefix: "cron-pending-retention-" });
+afterEach(() => vi.restoreAllMocks());
 
 it("keeps the pending terminal receipt within 64 rows until reconciliation releases it", async () => {
   const { storePath } = await makeStorePath();
   const now = Date.now();
   const started = createDeferred();
   const completion = createDeferred<{ status: "ok" }>();
-  const runCommandJob = vi
-    .fn<NonNullable<CronServiceDeps["runCommandJob"]>>()
-    .mockResolvedValue({ status: "ok" })
-    .mockImplementationOnce(async () => {
-      started.resolve();
-      return completion.promise;
-    });
+  const runCommandJob = vi.fn(async () => {
+    started.resolve();
+    return completion.promise;
+  });
   const makeService = (cronEnabled = true) =>
     new CronService({
       scheduler: createTestGatewayScheduler(),
@@ -58,16 +55,11 @@ it("keeps the pending terminal receipt within 64 rows until reconciliation relea
     payload: { kind: "command", argv: ["true"] },
   });
   const history: string[] = [];
-  // A clock adjustment can leave all existing terminal rows newer than the
-  // next admitted run. Its pending job association must keep the receipt.
+  // Clock-skewed history must not evict the pending receipt.
   for (let index = 0; index < 64; index += 1) {
     const receipt = claimCronRunReceiptForTest(storePath, job, now + 100 + index * 2);
     history.push(receipt.receiptId);
-    await finishCronRunReceiptAsync({
-      handle: receipt,
-      status: "ok",
-      finishedAtMs: now + 101 + index * 2,
-    });
+    await finish({ handle: receipt, status: "ok", finishedAtMs: now + 101 + index * 2 });
   }
   const database = openOpenClawStateDatabase().db;
   const terminalIds = () =>
@@ -92,13 +84,9 @@ it("keeps the pending terminal receipt within 64 rows until reconciliation relea
     expect(retirement()).toEqual({ receipt_id: pending!.receiptId });
 
     database.exec(`
-        CREATE TRIGGER reject_pending_receipt_completion
-        BEFORE UPDATE ON cron_jobs
-        WHEN NEW.job_id = '${job.id}'
-          AND json_extract(NEW.state_json, '$.runningAtMs') IS NULL
-        BEGIN
-          SELECT RAISE(ABORT, 'pending receipt completion unavailable');
-        END;
+        CREATE TRIGGER reject_pending_receipt_completion BEFORE UPDATE ON cron_jobs
+        WHEN NEW.job_id = '${job.id}' AND json_extract(NEW.state_json, '$.runningAtMs') IS NULL
+        BEGIN SELECT RAISE(ABORT, 'pending receipt completion unavailable'); END;
       `);
     completion.resolve({ status: "ok" });
     await expect(running).rejects.toThrow("pending receipt completion unavailable");
@@ -111,24 +99,20 @@ it("keeps the pending terminal receipt within 64 rows until reconciliation relea
     });
     // A late result prunes while preserving the unreconciled run marker after an owner edit.
     const queries = vi.spyOn(sqliteQuery, "executeSqliteQuerySync");
-    let fetchedRows: number;
-    try {
-      runOpenClawStateWriteTransaction(({ db }) =>
-        finishCronRunReceiptInDatabase({
-          database: db,
-          receiptSchema: prepareCronRunReceiptWriteSchema(db),
-          handle: pending!,
-          pendingReceiptId: pending!.receiptId,
-          status: "ok",
-          finishedAtMs: now,
-        }),
-      );
-      fetchedRows = queries.mock.results.flatMap((result) =>
-        result.type === "return" ? result.value.rows : [],
-      ).length;
-    } finally {
-      queries.mockRestore();
-    }
+    write(({ db }) =>
+      finishReceipt({
+        database: db,
+        receiptSchema: prepareCronRunReceiptWriteSchema(db),
+        handle: pending!,
+        pendingReceiptId: pending!.receiptId,
+        status: "ok",
+        finishedAtMs: now,
+      }),
+    );
+    const fetchedRows = queries.mock.results.flatMap((result) =>
+      result.type === "return" ? result.value.rows : [],
+    ).length;
+    queries.mockRestore();
     expect(terminalIds()).toEqual([...history.slice(1).toReversed(), pending!.receiptId]);
     expect(retirement()).toEqual({ receipt_id: pending!.receiptId });
     expect((await loadCronStore(storePath)).jobs[0]?.state.runningReceiptId).toBe(
@@ -148,8 +132,7 @@ it("keeps the pending terminal receipt within 64 rows until reconciliation relea
     expect(runCommandJob).toHaveBeenCalledTimes(2);
     expect(terminalIds()).toHaveLength(64);
     expect(terminalIds()).not.toContain(pending!.receiptId);
-    // Read the companion directly so a dangling retirement cannot hide
-    // behind its receipt join after ordinary terminal pruning.
+    // Query directly: a receipt join would hide a dangling retirement after pruning.
     expect(retirement()).toBeUndefined();
   } finally {
     database.exec("DROP TRIGGER IF EXISTS reject_pending_receipt_completion");
