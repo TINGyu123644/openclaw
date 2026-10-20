@@ -8,6 +8,8 @@ let stateDir = "";
 let secretPath = "";
 let credentials = "";
 let env: NodeJS.ProcessEnv;
+const ensureToken = () => ensureExtensionRelayToken(env);
+const readToken = () => readExtensionRelayToken(env);
 
 beforeEach(() => {
   stateDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-relay-auth-")));
@@ -20,145 +22,137 @@ afterEach(() => {
   fs.rmSync(stateDir, { recursive: true, force: true });
 });
 
-describe("extension relay host-local secret", () => {
-  it("reuses a valid key without mutating its symlinked directory", async () => {
-    const first = await ensureExtensionRelayToken(env);
-    if (process.platform !== "win32") {
-      fs.chmodSync(credentials, 0o750);
-    }
-    const target = path.join(stateDir, "credential-target");
-    fs.renameSync(credentials, target);
+it("reuses a valid key without mutating its symlinked directory", async () => {
+  const first = await ensureToken();
+  if (process.platform !== "win32") {
+    fs.chmodSync(credentials, 0o750);
+  }
+  const target = path.join(stateDir, "credential-target");
+  fs.renameSync(credentials, target);
+  fs.symlinkSync(target, credentials, "junction");
+  const { dev, ino, mode } = fs.statSync(secretPath);
+  const bytes = fs.readFileSync(secretPath);
+  await expect(ensureToken()).resolves.toBe(first);
+  expect(readToken()).toBe(first);
+  expect(fs.readFileSync(secretPath)).toEqual(bytes);
+  expect(fs.statSync(secretPath)).toMatchObject({ dev, ino, mode });
+  expect(fs.lstatSync(credentials).isSymbolicLink()).toBe(true);
+  if (process.platform !== "win32") {
+    expect(fs.statSync(credentials).mode & 0o777).toBe(0o750);
+  }
+});
+
+it.each([
+  { name: "simultaneous first callers", writerStarted: false, symlink: false },
+  { name: "a writer in progress through a directory alias", writerStarted: true, symlink: true },
+])("adopts the first writer's token with $name", async ({ writerStarted, symlink }) => {
+  const writerToken = "a1".repeat(32);
+  const target = symlink ? path.join(stateDir, "credential-target") : credentials;
+  fs.mkdirSync(target, { mode: 0o700 });
+  if (symlink) {
     fs.symlinkSync(target, credentials, "junction");
-    const before = fs.statSync(secretPath);
-    const bytes = fs.readFileSync(secretPath);
-    await expect(ensureExtensionRelayToken(env)).resolves.toBe(first);
-    expect(readExtensionRelayToken(env)).toBe(first);
-    expect(fs.readFileSync(secretPath)).toEqual(bytes);
-    expect(fs.statSync(secretPath)).toMatchObject({
-      dev: before.dev,
-      ino: before.ino,
-      mode: before.mode,
-    });
-    expect(fs.lstatSync(credentials).isSymbolicLink()).toBe(true);
+  }
+  const fd = writerStarted
+    ? fs.openSync(path.join(target, path.basename(secretPath)), "wx", 0o600)
+    : undefined;
+  try {
+    const before = fd === undefined ? undefined : fs.fstatSync(fd);
+    const tokens = Promise.all([ensureToken(), ensureToken()]);
+    // Hold the first writer's empty file until both callers have started.
+    if (fd !== undefined) {
+      fs.writeFileSync(fd, `${writerToken}\n`);
+    }
+    const [first, second] = await tokens;
+    expect(first).toMatch(/^[0-9a-f]{64}$/);
+    expect(second).toBe(first);
+    expect(readToken()).toBe(first);
     if (process.platform !== "win32") {
-      expect(fs.statSync(credentials).mode & 0o777).toBe(0o750);
-    }
-  });
-
-  it.each([
-    { name: "simultaneous first callers", writerStarted: false, symlink: false },
-    { name: "a writer in progress through a directory alias", writerStarted: true, symlink: true },
-  ])("adopts the first writer's token with $name", async ({ writerStarted, symlink }) => {
-    const writerToken = "a1".repeat(32);
-    const target = symlink ? path.join(stateDir, "credential-target") : credentials;
-    fs.mkdirSync(target, { mode: 0o700 });
-    if (symlink) {
-      fs.symlinkSync(target, credentials, "junction");
-    }
-    const fd = writerStarted
-      ? fs.openSync(path.join(target, path.basename(secretPath)), "wx", 0o600)
-      : undefined;
-    try {
-      const before = fd === undefined ? undefined : fs.fstatSync(fd);
-      const tokens = Promise.all([ensureExtensionRelayToken(env), ensureExtensionRelayToken(env)]);
-      // Hold the first writer's empty file until both callers have started.
-      if (fd !== undefined) {
-        fs.writeFileSync(fd, `${writerToken}\n`);
-      }
-      const [first, second] = await tokens;
-      expect(first).toMatch(/^[0-9a-f]{64}$/);
-      expect(second).toBe(first);
-      expect(readExtensionRelayToken(env)).toBe(first);
-      if (process.platform !== "win32") {
-        expect(fs.statSync(secretPath).mode & 0o777).toBe(0o600);
-      }
-      expect(fs.lstatSync(credentials).isSymbolicLink()).toBe(symlink);
-      if (before) {
-        expect(first).toBe(writerToken);
-        expect(fs.readFileSync(secretPath, "utf8")).toBe(`${writerToken}\n`);
-        expect(fs.statSync(secretPath)).toMatchObject({ dev: before.dev, ino: before.ino });
-      }
-    } finally {
-      if (fd !== undefined) {
-        fs.closeSync(fd);
-      }
-    }
-  });
-
-  it("rejects creating a missing key through a symlinked credential directory", async () => {
-    const target = path.join(stateDir, "credential-target");
-    fs.mkdirSync(target, { mode: 0o700 });
-    fs.symlinkSync(target, credentials, "junction");
-    await expect(ensureExtensionRelayToken(env)).rejects.toThrow("must not be a symlink");
-    expect(fs.readdirSync(target)).toEqual([]);
-    expect(fs.lstatSync(credentials).isSymbolicLink()).toBe(true);
-  });
-
-  it.each([
-    { name: "empty", content: "" },
-    { name: "malformed", content: "not-a-relay-token\n" },
-  ])("rejects a persistent $name secret without replacing it", async ({ content }) => {
-    fs.mkdirSync(credentials, { mode: 0o700 });
-    fs.writeFileSync(secretPath, content, { flag: "wx", mode: 0o600 });
-    const before = fs.statSync(secretPath);
-    await expect(ensureExtensionRelayToken(env)).rejects.toMatchObject({
-      cause: expect.any(Error),
-    });
-    expect(fs.readFileSync(secretPath, "utf8")).toBe(content);
-    expect(fs.statSync(secretPath)).toMatchObject({ dev: before.dev, ino: before.ino });
-  });
-
-  describe.runIf(process.platform !== "win32")("POSIX secret protection", () => {
-    it("self-heals a secret with mode 0644 to 0600 and still reads it", async () => {
-      const token = await ensureExtensionRelayToken(env);
-      fs.chmodSync(secretPath, 0o644);
-      expect(readExtensionRelayToken(env)).toBe(token);
       expect(fs.statSync(secretPath).mode & 0o777).toBe(0o600);
-    });
+    }
+    expect(fs.lstatSync(credentials).isSymbolicLink()).toBe(symlink);
+    if (before) {
+      expect(first).toBe(writerToken);
+      expect(fs.readFileSync(secretPath, "utf8")).toBe(`${writerToken}\n`);
+      expect(fs.statSync(secretPath)).toMatchObject({ dev: before.dev, ino: before.ino });
+    }
+  } finally {
+    if (fd !== undefined) {
+      fs.closeSync(fd);
+    }
+  }
+});
 
-    it("refuses a foreign-owned secret without changing it", async () => {
-      const token = await ensureExtensionRelayToken(env);
-      const owner = fs.statSync(secretPath).uid;
-      vi.spyOn(process, "getuid").mockReturnValue(owner + 1);
-      expect(readExtensionRelayToken(env)).toBeNull();
-      await expect(ensureExtensionRelayToken(env)).rejects.toThrow("unreadable/malformed");
-      expect(fs.readFileSync(secretPath, "utf8").trim()).toBe(token);
-    });
+it("rejects creating a missing key through a symlinked credential directory", async () => {
+  const target = path.join(stateDir, "credential-target");
+  fs.mkdirSync(target, { mode: 0o700 });
+  fs.symlinkSync(target, credentials, "junction");
+  await expect(ensureToken()).rejects.toThrow("must not be a symlink");
+  expect(fs.readdirSync(target)).toEqual([]);
+  expect(fs.lstatSync(credentials).isSymbolicLink()).toBe(true);
+});
 
-    it("refuses a broad-mode secret when tightening fails", async () => {
-      await ensureExtensionRelayToken(env);
-      fs.chmodSync(secretPath, 0o644);
-      vi.spyOn(fs, "fchmodSync").mockImplementation(() => {
-        throw new Error("permission denied");
-      });
-      expect(readExtensionRelayToken(env)).toBeNull();
-    });
+it.each([
+  ["empty", ""],
+  ["malformed", "not-a-relay-token\n"],
+])("rejects a persistent %s secret without replacing it", async (_name, content) => {
+  fs.mkdirSync(credentials, { mode: 0o700 });
+  fs.writeFileSync(secretPath, content, { flag: "wx", mode: 0o600 });
+  const { dev, ino } = fs.statSync(secretPath);
+  await expect(ensureToken()).rejects.toMatchObject({ cause: expect.any(Error) });
+  expect(fs.readFileSync(secretPath, "utf8")).toBe(content);
+  expect(fs.statSync(secretPath)).toMatchObject({ dev, ino });
+});
 
-    it("rejects a swapped key path without changing its replacement", async () => {
-      await ensureExtensionRelayToken(env);
-      fs.chmodSync(secretPath, 0o644);
-      const replacement = path.join(stateDir, "replacement");
-      fs.writeFileSync(replacement, "b2".repeat(32), { mode: 0o644 });
-      // Creation modes are masked by umask; the replacement must start broad.
-      fs.chmodSync(replacement, 0o644);
-      const inspected = fs.lstatSync(secretPath);
-      vi.spyOn(fs, "lstatSync").mockImplementationOnce(() => {
-        fs.renameSync(secretPath, path.join(stateDir, "original"));
-        fs.symlinkSync(replacement, secretPath);
-        return inspected;
-      });
-
-      expect.soft(readExtensionRelayToken(env)).toBeNull();
-      expect(fs.statSync(replacement).mode & 0o777).toBe(0o644);
-    });
+describe.runIf(process.platform !== "win32")("POSIX secret protection", () => {
+  it("self-heals a secret with mode 0644 to 0600 and still reads it", async () => {
+    const token = await ensureToken();
+    fs.chmodSync(secretPath, 0o644);
+    expect(readToken()).toBe(token);
+    expect(fs.statSync(secretPath).mode & 0o777).toBe(0o600);
   });
 
-  it("refuses a symlinked secret", async () => {
-    const token = await ensureExtensionRelayToken(env);
-    const realTarget = path.join(stateDir, "elsewhere.secret");
-    fs.renameSync(secretPath, realTarget);
-    fs.symlinkSync(realTarget, secretPath);
-    expect(token).toMatch(/^[0-9a-f]{64}$/);
-    expect(readExtensionRelayToken(env)).toBeNull();
+  it("refuses a foreign-owned secret without changing it", async () => {
+    const token = await ensureToken();
+    const owner = fs.statSync(secretPath).uid;
+    vi.spyOn(process, "getuid").mockReturnValue(owner + 1);
+    expect(readToken()).toBeNull();
+    await expect(ensureToken()).rejects.toThrow("unreadable/malformed");
+    expect(fs.readFileSync(secretPath, "utf8").trim()).toBe(token);
   });
+
+  it("refuses a broad-mode secret when tightening fails", async () => {
+    await ensureToken();
+    fs.chmodSync(secretPath, 0o644);
+    vi.spyOn(fs, "fchmodSync").mockImplementation(() => {
+      throw new Error("permission denied");
+    });
+    expect(readToken()).toBeNull();
+  });
+
+  it("rejects a swapped key path without changing its replacement", async () => {
+    await ensureToken();
+    fs.chmodSync(secretPath, 0o644);
+    const replacement = path.join(stateDir, "replacement");
+    fs.writeFileSync(replacement, "b2".repeat(32), { mode: 0o644 });
+    // Creation modes are masked by umask; the replacement must start broad.
+    fs.chmodSync(replacement, 0o644);
+    const inspected = fs.lstatSync(secretPath);
+    vi.spyOn(fs, "lstatSync").mockImplementationOnce(() => {
+      fs.renameSync(secretPath, path.join(stateDir, "original"));
+      fs.symlinkSync(replacement, secretPath);
+      return inspected;
+    });
+
+    expect.soft(readToken()).toBeNull();
+    expect(fs.statSync(replacement).mode & 0o777).toBe(0o644);
+  });
+});
+
+it("refuses a symlinked secret", async () => {
+  const token = await ensureToken();
+  const realTarget = path.join(stateDir, "elsewhere.secret");
+  fs.renameSync(secretPath, realTarget);
+  fs.symlinkSync(realTarget, secretPath);
+  expect(token).toMatch(/^[0-9a-f]{64}$/);
+  expect(readToken()).toBeNull();
 });

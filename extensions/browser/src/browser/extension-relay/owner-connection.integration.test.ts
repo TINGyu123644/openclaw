@@ -20,19 +20,24 @@ function ownerRequests(ws: WebSocket) {
   let sequence = 0;
   return async (op: string, fields: object = {}) => {
     const id = ++sequence;
-    const response = new Promise<{ result?: unknown; error?: string }>((resolve) => {
-      const onMessage = (raw: RawData) => {
-        const value = JSON.parse(rawDataToString(raw));
-        if (value.id === id) {
-          ws.off("message", onMessage);
-          resolve(value);
-        }
-      };
-      ws.on("message", onMessage);
-    });
+    const response = receive(ws, (value) => value.id === id);
     ws.send(JSON.stringify({ id, op, ...fields }));
     return await response;
   };
+}
+
+function receive(ws: WebSocket, accepts: (value: Record<string, unknown>) => boolean) {
+  return new Promise<Record<string, unknown>>((resolve) => {
+    const onMessage = (raw: RawData) => {
+      const value: Record<string, unknown> = JSON.parse(rawDataToString(raw));
+      if (!accepts(value)) {
+        return;
+      }
+      ws.off("message", onMessage);
+      resolve(value);
+    };
+    ws.on("message", onMessage);
+  });
 }
 
 it("scopes references to their authenticated connection and releases native claims on peer loss", async () => {
@@ -53,18 +58,13 @@ it("scopes references to their authenticated connection and releases native clai
 
       // Give the first owner a real logical claimant before the Gateway drops its own.
       const { result: stream } = await request("cdp.open");
-      const attached = new Promise<void>((resolve) => {
-        first.ws.on("message", (raw) => {
-          const value = JSON.parse(rawDataToString(raw));
-          if (
-            value.stream === stream &&
-            value.frame &&
-            JSON.parse(value.frame).method === "Target.attachedToTarget"
-          ) {
-            resolve();
-          }
-        });
-      });
+      const attached = receive(
+        first.ws,
+        (value) =>
+          value.stream === stream &&
+          typeof value.frame === "string" &&
+          JSON.parse(value.frame).method === "Target.attachedToTarget",
+      );
       const frame = JSON.stringify({
         id: 1,
         method: "Target.setAutoAttach",
