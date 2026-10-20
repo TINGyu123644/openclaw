@@ -5,10 +5,7 @@ const spawnSyncMock = vi.hoisted(() => vi.fn());
 
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
-  return {
-    ...actual,
-    spawnSync: spawnSyncMock,
-  };
+  return { ...actual, spawnSync: spawnSyncMock };
 });
 
 import { readProcessTreeCpuMs, readProcessTreeRssBytes } from "./process-tree-cpu.js";
@@ -80,14 +77,7 @@ describe("readProcessTreeCpuMs on Windows", () => {
   });
 
   it("skips Windows process entries with non-decimal process ids", () => {
-    useSnapshot(
-      processEntry({
-        ProcessId: "0x64",
-        KernelModeTime: "10000",
-        UserModeTime: "20000",
-        WorkingSetSize: "1000",
-      }),
-    );
+    useSnapshot(processEntry({ ProcessId: "0x64" }));
     expectMetrics(100, null, null);
   });
 
