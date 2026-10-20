@@ -19,7 +19,17 @@ vi.mock("./extension-relay/owner-client.js", () => ({
   RelayOwnerClient: { connect: mocks.connect },
 }));
 
-function installation(): BrowserExtensionStatus {
+function registration(overrides: Partial<BrowserExtensionStatus["registrations"][number]> = {}) {
+  return {
+    product: "chrome" as const,
+    browser: "Chrome",
+    manifestPath: "/private/manifest",
+    extensionIds: [],
+    state: "owned" as const,
+    ...overrides,
+  };
+}
+function installation(overrides: Partial<BrowserExtensionStatus> = {}): BrowserExtensionStatus {
   return {
     platform: "linux",
     platformSupport: "automatic",
@@ -29,20 +39,28 @@ function installation(): BrowserExtensionStatus {
     discovered: [],
     storeDiscovered: [],
     storeInstallRequests: [],
-    registrations: [
-      {
-        product: "chrome",
-        browser: "Chrome",
-        manifestPath: "/private/manifest",
-        extensionIds: [],
-        state: "owned",
-      },
-    ],
+    registrations: [registration()],
     manualSetupRequired: true,
     issues: [],
+    ...overrides,
   };
 }
 const options = { bundledDir: "/bundle", pluginRoot: "/plugin", cfg: {} };
+const setup = (
+  action: "install" | "inspect" | "verify",
+  overrides: Partial<Parameters<typeof runBrowserExtensionSetup>[0]> = {},
+) => runBrowserExtensionSetup({ ...options, action, ...overrides });
+const approval = { product: "chrome" as const, enabled: false, awaitingApproval: true };
+function expectNoEffects() {
+  expect(mocks.connect).not.toHaveBeenCalled();
+  expect(mocks.install).not.toHaveBeenCalled();
+  expect(mocks.readToken).not.toHaveBeenCalled();
+}
+function expectRedacted(result: unknown, ...secrets: string[]) {
+  for (const secret of ["synthetic-private-relay-key", ...secrets]) {
+    expect(JSON.stringify(result)).not.toContain(secret);
+  }
+}
 describe("host-local Chrome setup", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -55,33 +73,21 @@ describe("host-local Chrome setup", () => {
   });
 
   it("does not replace an unavailable saved profile or choose between conflicting registrations", async () => {
-    const saved = installation();
-    saved.registrations[0]!.browserProfile = "work";
+    const saved = installation({ registrations: [registration({ browserProfile: "work" })] });
     mocks.inspect.mockResolvedValue(saved);
-    await expect(runBrowserExtensionSetup({ ...options, action: "install" })).rejects.toThrow(
-      "existing extension browser profile",
-    );
-    saved.registrations.push({
-      ...saved.registrations[0]!,
-      product: "chromium",
-      browserProfile: "other",
-    });
-    await expect(runBrowserExtensionSetup({ ...options, action: "install" })).rejects.toThrow(
-      "registrations disagree",
-    );
+    await expect(setup("install")).rejects.toThrow("existing extension browser profile");
+    saved.registrations.push(registration({ product: "chromium", browserProfile: "other" }));
+    await expect(setup("install")).rejects.toThrow("registrations disagree");
     expect(mocks.install).not.toHaveBeenCalled();
-    await runBrowserExtensionSetup({ ...options, action: "install", profile: "chrome" });
+    await setup("install", { profile: "chrome" });
     expect(mocks.install).toHaveBeenCalledWith(
       expect.objectContaining({ browserProfile: "chrome" }),
     );
   });
 
   it("keeps actual Chrome approval separate from automatic pairing", async () => {
-    mocks.install.mockResolvedValue({
-      ...installation(),
-      storeDiscovered: [{ product: "chrome", enabled: false, awaitingApproval: true }],
-    });
-    const result = await runBrowserExtensionSetup({ ...options, action: "install" });
+    mocks.install.mockResolvedValue(installation({ storeDiscovered: [approval] }));
+    const result = await setup("install");
     expect(result).toMatchObject({
       phase: "needs_browser_action",
       reason: "chrome_approval_required",
@@ -93,22 +99,20 @@ describe("host-local Chrome setup", () => {
   });
 
   it("does not let sibling browser installations mask an unavailable Chrome helper", async () => {
-    const observed = installation();
-    observed.registrations[0]!.issue = "runtime unavailable";
-    observed.registrations.push({
-      ...observed.registrations[0]!,
-      product: "chromium",
-      issue: undefined,
-    });
-    mocks.inspect.mockResolvedValue({
-      ...observed,
-      storeDiscovered: [
-        { product: "chrome", enabled: false, awaitingApproval: true },
-        { product: "chromium", enabled: true, awaitingApproval: false },
-      ],
-      discovered: [{ product: "chrome-for-testing" }],
-    });
-    const result = await runBrowserExtensionSetup({ ...options, action: "inspect" });
+    mocks.inspect.mockResolvedValue(
+      installation({
+        registrations: [
+          registration({ issue: "runtime unavailable" }),
+          registration({ product: "chromium" }),
+        ],
+        storeDiscovered: [
+          approval,
+          { product: "chromium", enabled: true, awaitingApproval: false },
+        ],
+        discovered: [{ product: "chrome-for-testing" }],
+      }),
+    );
+    const result = await setup("inspect");
     expect(result).toMatchObject({
       phase: "blocked",
       reason: "native_host_unavailable",
@@ -120,17 +124,12 @@ describe("host-local Chrome setup", () => {
         awaitingApproval: true,
       },
     });
-    expect(mocks.connect).not.toHaveBeenCalled();
-    expect(mocks.install).not.toHaveBeenCalled();
-    expect(mocks.readToken).not.toHaveBeenCalled();
-    expect(JSON.stringify(result)).not.toContain("/private");
-    expect(JSON.stringify(result)).not.toContain("synthetic-private-relay-key");
+    expectNoEffects();
+    expectRedacted(result, "/private");
   });
 
   it("proves the exact local profile even when configured Gateway uses an SSH loopback", async () => {
-    const result = await runBrowserExtensionSetup({
-      ...options,
-      action: "verify",
+    const result = await setup("verify", {
       profile: "work",
       cfg: {
         gateway: { mode: "remote", remote: { url: "ws://127.0.0.1:18789" } },
@@ -147,12 +146,12 @@ describe("host-local Chrome setup", () => {
     });
     expect(result).not.toHaveProperty("gatewayLocal");
     expect(mocks.close).toHaveBeenCalledOnce();
-    expect(JSON.stringify(result)).not.toContain("synthetic-private-relay-key");
+    expectRedacted(result);
   });
 
   it("does not mint a key or claim connection when none exists", async () => {
     mocks.readToken.mockReturnValue(null);
-    const result = await runBrowserExtensionSetup({ ...options, action: "verify" });
+    const result = await setup("verify");
     expect(result.connection.state).toBe("unavailable");
     expect(mocks.connect).not.toHaveBeenCalled();
     expect(mocks.install).not.toHaveBeenCalled();
@@ -160,18 +159,16 @@ describe("host-local Chrome setup", () => {
 
   it("redacts connection failures", async () => {
     mocks.connect.mockRejectedValue(new Error("synthetic-private-relay-key"));
-    const missing = await runBrowserExtensionSetup({ ...options, action: "verify" });
+    const missing = await setup("verify");
     expect(missing.connection.state).toBe("unavailable");
-    expect(JSON.stringify(missing)).not.toContain("synthetic-private-relay-key");
+    expectRedacted(missing);
   });
 
   it("rejects invalid profile and canceled request before install", async () => {
-    await expect(
-      runBrowserExtensionSetup({ ...options, action: "install", profile: "openclaw" }),
-    ).rejects.toThrow("extension browser profile");
-    await expect(
-      runBrowserExtensionSetup({ ...options, action: "install", signal: AbortSignal.abort() }),
-    ).rejects.toThrow();
+    await expect(setup("install", { profile: "openclaw" })).rejects.toThrow(
+      "extension browser profile",
+    );
+    await expect(setup("install", { signal: AbortSignal.abort() })).rejects.toThrow();
     expect(mocks.install).not.toHaveBeenCalled();
   });
 });

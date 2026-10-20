@@ -12,6 +12,11 @@ vi.mock("./extension-relay/relay-auth.js", async (importOriginal) => {
 });
 
 const RELAY_KEY = relayTestKey(5);
+const extensionProfile = (cdpPort: number) => ({ driver: "extension" as const, cdpPort });
+const gatewayPairing = (
+  cfg: Parameters<typeof buildBrowserExtensionPairing>[0]["cfg"],
+  profile?: string,
+) => buildBrowserExtensionPairing({ cfg, profile, localTransport: "gateway" });
 beforeEach(() => {
   vi.mocked(ensureExtensionRelayToken).mockResolvedValue(RELAY_KEY);
 });
@@ -22,22 +27,15 @@ describe("buildBrowserExtensionPairing", () => {
       browser: {
         defaultProfile: "work",
         profiles: {
-          first: { driver: "extension" as const, cdpPort: 19441 },
-          work: { driver: "extension" as const, cdpPort: 19442 },
+          first: extensionProfile(19441),
+          work: extensionProfile(19442),
         },
       },
     };
-    const legacy = await buildBrowserExtensionPairing({
-      cfg,
-      localTransport: "gateway",
-    });
+    const legacy = await gatewayPairing(cfg);
     expect(legacy.relayPort).toBe(19441);
     expect(new URL(legacy.pairingString).searchParams.has("profile")).toBe(false);
-    const result = await buildBrowserExtensionPairing({
-      cfg,
-      profile: "work",
-      localTransport: "gateway",
-    });
+    const result = await gatewayPairing(cfg, "work");
     expect(result.relayPort).toBe(19442);
     expect(new URL(result.pairingString).searchParams.get("profile")).toBe("work");
     await expect(buildBrowserExtensionPairing({ cfg, profile: "missing" })).rejects.toThrow(
@@ -76,27 +74,16 @@ describe("buildBrowserExtensionPairing", () => {
     });
   });
 
-  it.each([
-    {
-      label: "remote TLS Gateway",
-      gatewayUrl: "wss://gateway.example.com:9444",
-      encodedGateway: "wss%3A%2F%2Fgateway.example.com%3A9444",
-    },
-  ])("keeps browser-node bootstrap on the host-local relay for $label", async (testCase) => {
+  it("keeps browser-node bootstrap on the host-local relay for a remote TLS Gateway", async () => {
     await expect(
       buildBrowserExtensionPairing({
         cfg: {
-          gateway: {
-            mode: "remote",
-            remote: { url: testCase.gatewayUrl },
-          },
-          browser: {
-            profiles: { chrome: { driver: "extension", cdpPort: 19_198 } },
-          },
+          gateway: { mode: "remote", remote: { url: "wss://gateway.example.com:9444" } },
+          browser: { profiles: { chrome: extensionProfile(19_198) } },
         },
       }),
     ).resolves.toEqual({
-      pairingString: `ws://127.0.0.1:19198/extension?gateway=${testCase.encodedGateway}#${RELAY_KEY}`,
+      pairingString: `ws://127.0.0.1:19198/extension?gateway=wss%3A%2F%2Fgateway.example.com%3A9444#${RELAY_KEY}`,
       relayPort: 19_198,
       topology: "browser-node",
     });
@@ -105,11 +92,7 @@ describe("buildBrowserExtensionPairing", () => {
   it("keeps an explicit remote Gateway direct and manual-only", async () => {
     await expect(
       buildBrowserExtensionPairing({
-        cfg: {
-          browser: {
-            profiles: { chrome: { driver: "extension", cdpPort: 19_197 } },
-          },
-        },
+        cfg: { browser: { profiles: { chrome: extensionProfile(19_197) } } },
         gatewayUrl: "wss://gateway.example.com:9443",
       }),
     ).resolves.toEqual({
@@ -121,9 +104,7 @@ describe("buildBrowserExtensionPairing", () => {
 
   it("requires an explicit certificate hostname for local Gateway TLS", async () => {
     await expect(
-      buildBrowserExtensionPairing({
-        cfg: { gateway: { tls: { enabled: true } } },
-      }),
+      buildBrowserExtensionPairing({ cfg: { gateway: { tls: { enabled: true } } } }),
     ).rejects.toThrow("--gateway-url wss://<certificate-host>");
   });
 });

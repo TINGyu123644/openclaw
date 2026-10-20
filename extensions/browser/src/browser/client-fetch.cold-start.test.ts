@@ -13,6 +13,10 @@ const service = vi.hoisted(() => ({
   state: vi.fn(),
   readTabs: vi.fn(),
 }));
+const startBrowser = (signal?: AbortSignal) =>
+  fetchBrowserJson("/start", { method: "POST", timeoutMs: 20_000, signal });
+const readTabs = () => fetchBrowserJson("/tabs", { timeoutMs: 20_000 });
+const started = { ok: true, profile: "openclaw" };
 // mock-isolation: keep the service in memory; real startup installs host relays and credentials.
 vi.mock("../control-service.js", () => ({
   createBrowserControlContext: service.context,
@@ -39,7 +43,16 @@ function setup() {
     entered.resolve();
     return await ready.promise;
   });
-  return { state, context, entered, ready, running };
+  const finishStartup = async () => {
+    await entered.promise;
+    await vi.advanceTimersByTimeAsync(31_000);
+    ready.resolve(running);
+  };
+  const expectRunning = () => {
+    expect(state.profiles.get("openclaw")?.running).toBe(running);
+    expect(launchOpenClawChrome).toHaveBeenCalledOnce();
+  };
+  return { state, entered, finishStartup, expectRunning };
 }
 
 afterEach(() => {
@@ -50,49 +63,37 @@ afterEach(() => {
 
 describe("browser control cold start", () => {
   it("waits beyond the action budget for startup and reuses the browser", async () => {
-    const { entered, ready, running, state } = setup();
-    const first = fetchBrowserJson("/start", { method: "POST", timeoutMs: 20_000 });
-    const result = first.catch((error: unknown) => error);
+    const { entered, finishStartup, expectRunning } = setup();
+    const result = startBrowser().catch((error: unknown) => error);
     await entered.promise;
-    const tabs = fetchBrowserJson("/tabs", { timeoutMs: 20_000 }).catch((error: unknown) => error);
-    await vi.advanceTimersByTimeAsync(31_000);
-    ready.resolve(running);
-    expect(await result).toEqual({ ok: true, profile: "openclaw" });
+    const tabs = readTabs().catch((error: unknown) => error);
+    await finishStartup();
+    expect(await result).toEqual(started);
     expect(await tabs).toEqual({ running: true, tabs: [], canAutoResizeViewport: true });
-    await expect(
-      fetchBrowserJson("/start", { method: "POST", timeoutMs: 20_000 }),
-    ).resolves.toEqual({ ok: true, profile: "openclaw" });
-    expect(state.profiles.get("openclaw")?.running).toBe(running);
-    expect(launchOpenClawChrome).toHaveBeenCalledOnce();
+    await expect(startBrowser()).resolves.toEqual(started);
+    expectRunning();
   });
 
   it("abandons an expired caller without cancelling the shared launch", async () => {
-    const { entered, ready, running, state } = setup();
+    const { entered, finishStartup, expectRunning } = setup();
     const caller = new AbortController();
-    const first = fetchBrowserJson("/start", {
-      method: "POST",
-      timeoutMs: 20_000,
-      signal: caller.signal,
-    });
-    const cancelled = expect(first).rejects.toThrow("caller deadline expired");
+    const cancelled = expect(startBrowser(caller.signal)).rejects.toThrow(
+      "caller deadline expired",
+    );
     await entered.promise;
     setTimeout(() => caller.abort(new Error("caller deadline expired")), 10_000);
     await vi.advanceTimersByTimeAsync(10_000);
     await cancelled;
-    const next = fetchBrowserJson("/start", { method: "POST", timeoutMs: 20_000 });
-    await vi.advanceTimersByTimeAsync(31_000);
-    ready.resolve(running);
-    await expect(next).resolves.toEqual({ ok: true, profile: "openclaw" });
-    expect(state.profiles.get("openclaw")?.running).toBe(running);
-    expect(launchOpenClawChrome).toHaveBeenCalledOnce();
+    const next = startBrowser();
+    await finishStartup();
+    await expect(next).resolves.toEqual(started);
+    expectRunning();
   });
 
   it("enforces the action deadline after startup completes", async () => {
-    const { entered, ready, running } = setup();
-    const start = fetchBrowserJson("/start", { method: "POST", timeoutMs: 20_000 });
-    await entered.promise;
-    await vi.advanceTimersByTimeAsync(31_000);
-    ready.resolve(running);
+    const { finishStartup } = setup();
+    const start = startBrowser();
+    await finishStartup();
     await start;
     const reading = Promise.withResolvers<void>();
     const tabList = Promise.withResolvers<[]>();
@@ -100,8 +101,7 @@ describe("browser control cold start", () => {
       reading.resolve();
       return tabList.promise;
     });
-    const tabs = fetchBrowserJson("/tabs", { timeoutMs: 20_000 });
-    const expired = expect(tabs).rejects.toThrow("timed out");
+    const expired = expect(readTabs()).rejects.toThrow("timed out");
     await reading.promise;
     await vi.advanceTimersByTimeAsync(20_000);
     tabList.resolve([]);
@@ -127,8 +127,7 @@ describe("browser control cold start", () => {
         );
       });
     });
-    const start = fetchBrowserJson("/start", { method: "POST", timeoutMs: 20_000 });
-    const expired = expect(start).rejects.toThrow(
+    const expired = expect(startBrowser()).rejects.toThrow(
       'Browser startup for profile "openclaw" did not finish within 120000ms',
     );
     await entered.promise;

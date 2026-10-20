@@ -1,4 +1,3 @@
-// Browser tests cover errors plugin behavior.
 import { describe, expect, it } from "vitest";
 import {
   BROWSER_ACT_ERROR_CODES,
@@ -11,16 +10,11 @@ import {
 
 describe("browser action errors", () => {
   it("preserves known codes and drops unknown route metadata", () => {
-    expect(
-      parseBrowserErrorPayload({
-        error: "evaluation disabled",
-        code: BROWSER_ACT_ERROR_CODES.evaluateDisabled,
-        untrusted: "drop me",
-      }),
-    ).toEqual({
+    const payload = {
       error: "evaluation disabled",
       code: BROWSER_ACT_ERROR_CODES.evaluateDisabled,
-    });
+    };
+    expect(parseBrowserErrorPayload({ ...payload, untrusted: "drop me" })).toEqual(payload);
     expect(parseBrowserErrorPayload({ error: "failure", code: "UNTRUSTED_CODE" })).toEqual({
       error: "failure",
       unrecognizedCode: true,
@@ -28,17 +22,14 @@ describe("browser action errors", () => {
   });
 
   it("preserves the navigation reason without forwarding policy details", () => {
+    const payload = { error: "browser navigation blocked by policy", reason: "navigation_blocked" };
     expect(
       parseBrowserErrorPayload({
-        error: "browser navigation blocked by policy",
-        reason: "navigation_blocked",
+        ...payload,
         details: { url: "http://internal.example/admin", address: "10.0.0.1" },
         cause: "private lookup details",
       }),
-    ).toEqual({
-      error: "browser navigation blocked by policy",
-      reason: "navigation_blocked",
-    });
+    ).toEqual(payload);
     expect(
       parseBrowserErrorPayload({ error: "failure", reason: "untrusted_reason", details: {} }),
     ).toEqual({ error: "failure" });
@@ -47,9 +38,7 @@ describe("browser action errors", () => {
 
 describe("BrowserTabNotFoundError", () => {
   it("teaches agents that bare numbers are not stable tab targets", () => {
-    const err = new BrowserTabNotFoundError({ input: "2" });
-
-    expect(err.message).toBe(
+    expect(new BrowserTabNotFoundError({ input: "2" }).message).toBe(
       'tab not found: browser tab "2" not found. Numeric values are not tab targets; use a stable tab id like "t1", a label, or a raw targetId. For positional selection, use "openclaw browser tab select 2".',
     );
   });
@@ -62,36 +51,17 @@ describe("no-display browser errors", () => {
     headlessSource: "profile",
     displayPresent: false,
   } as const;
+  const metadata = { reason: BROWSER_ERROR_REASONS.noDisplayForHeadedProfile, details };
 
   it("maps a closed reason and typed details", () => {
     expect(
-      toBrowserErrorResponse(
-        new BrowserProfileUnavailableError("display required", {
-          metadata: {
-            reason: BROWSER_ERROR_REASONS.noDisplayForHeadedProfile,
-            details,
-          },
-        }),
-      ),
-    ).toEqual({
-      status: 409,
-      message: "display required",
-      reason: BROWSER_ERROR_REASONS.noDisplayForHeadedProfile,
-      details,
-    });
+      toBrowserErrorResponse(new BrowserProfileUnavailableError("display required", { metadata })),
+    ).toEqual({ status: 409, message: "display required", ...metadata });
   });
 
   it("accepts only valid no-display metadata from route payloads", () => {
-    const payload = {
-      error: "display required",
-      reason: BROWSER_ERROR_REASONS.noDisplayForHeadedProfile,
-      details,
-    };
-    expect(parseBrowserErrorPayload(payload)).toEqual({
-      error: "display required",
-      reason: BROWSER_ERROR_REASONS.noDisplayForHeadedProfile,
-      details,
-    });
+    const payload = { error: "display required", ...metadata };
+    expect(parseBrowserErrorPayload(payload)).toEqual(payload);
     expect(
       parseBrowserErrorPayload({
         ...payload,

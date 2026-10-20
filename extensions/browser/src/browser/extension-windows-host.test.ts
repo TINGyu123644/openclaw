@@ -14,6 +14,21 @@ import {
 } from "./extension-windows-contract.js";
 import { windowsFixture } from "./extension-windows.test-support.js";
 const localFixture = useExtensionInstallFixture();
+function validate(
+  f: ReturnType<typeof windowsFixture> & {
+    deps: Parameters<typeof validateWindowsNativeContext>[1];
+  },
+  manifestPath = f.installation.manifestPath,
+) {
+  return validateWindowsNativeContext(
+    {
+      manifestPath,
+      launcherPath: f.installation.launcherPath,
+      expectedOrigins: [WINDOWS_OFFICIAL_ORIGIN],
+    },
+    f.deps,
+  );
+}
 describe("delegated Windows registration and read-only native admission", () => {
   function setup() {
     const f = windowsFixture();
@@ -92,16 +107,7 @@ describe("delegated Windows registration and read-only native admission", () => 
     const f = setup();
     f.context.browserProfile = "work";
     f.prepare();
-    expect(
-      await validateWindowsNativeContext(
-        {
-          manifestPath: f.installation.manifestPath,
-          launcherPath: f.installation.launcherPath,
-          expectedOrigins: [WINDOWS_OFFICIAL_ORIGIN],
-        },
-        f.deps,
-      ),
-    ).toBe("work");
+    expect(await validate(f)).toBe("work");
     expect(f.manage).not.toHaveBeenCalled();
     expect(f.ops.readFile).not.toHaveBeenCalledWith(f.context.configPath, expect.anything());
   });
@@ -148,16 +154,7 @@ describe("delegated Windows registration and read-only native admission", () => 
         f.installation.generation +
         "\\ai.openclaw.browser_bootstrap.json";
     }
-    await expect(
-      validateWindowsNativeContext(
-        {
-          manifestPath,
-          launcherPath: f.installation.launcherPath,
-          expectedOrigins: [WINDOWS_OFFICIAL_ORIGIN],
-        },
-        f.deps,
-      ),
-    ).rejects.toThrow();
+    await expect(validate(f, manifestPath)).rejects.toThrow();
     expect(f.manage).not.toHaveBeenCalled();
   });
 });

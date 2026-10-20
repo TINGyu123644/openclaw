@@ -46,48 +46,43 @@ export function windowsFixture() {
   const executable = "C:\\OpenClaw\\" + WINDOWS_NATIVE_EXE;
   const files = new Map<string, Buffer>();
   const hash = (bytes: Buffer) => crypto.createHash("sha256").update(bytes).digest("hex");
+  const json = (value: unknown) => Buffer.from(JSON.stringify(value));
   function prepare(
     selected = context,
     expectedOrigins = [WINDOWS_OFFICIAL_ORIGIN],
     companion = false,
   ) {
     const image = Buffer.from("MZ synthetic owned image; not Windows execution proof");
-    const binding = Buffer.from(
-      JSON.stringify({
-        version: 1,
-        mode: companion ? "companion-managed-wsl" : "native-windows-cli",
-        manifestPath: installation.manifestPath,
-        expectedOrigins,
-        nativeWindows: companion ? null : selected,
-      }),
-    );
-    const manifest = Buffer.from(
-      JSON.stringify({
-        name: BROWSER_NATIVE_HOST_NAME,
-        description: BROWSER_NATIVE_HOST_DESCRIPTION,
-        path: installation.launcherPath,
-        type: "stdio",
-        allowed_origins: expectedOrigins,
-      }),
-    );
+    const binding = json({
+      version: 1,
+      mode: companion ? "companion-managed-wsl" : "native-windows-cli",
+      manifestPath: installation.manifestPath,
+      expectedOrigins,
+      nativeWindows: companion ? null : selected,
+    });
+    const manifest = json({
+      name: BROWSER_NATIVE_HOST_NAME,
+      description: BROWSER_NATIVE_HOST_DESCRIPTION,
+      path: installation.launcherPath,
+      type: "stdio",
+      allowed_origins: expectedOrigins,
+    });
     files.set(executable, image);
     files.set(installation.launcherPath, image);
     files.set(installation.bindingPath, binding);
     files.set(installation.manifestPath, manifest);
     files.set(
       installation.receiptPath,
-      Buffer.from(
-        JSON.stringify({
-          owner: "openclaw-browser-native-host",
-          version: 1,
-          generation,
-          ownerSid: identity.sid,
-          transportVerified: true,
-          executableSha256: hash(image),
-          bindingSha256: hash(binding),
-          manifestSha256: hash(manifest),
-        }),
-      ),
+      json({
+        owner: "openclaw-browser-native-host",
+        version: 1,
+        generation,
+        ownerSid: identity.sid,
+        transportVerified: true,
+        executableSha256: hash(image),
+        bindingSha256: hash(binding),
+        manifestSha256: hash(manifest),
+      }),
     );
   }
   prepare();
