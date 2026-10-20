@@ -2,6 +2,17 @@ import { describe, expect, it } from "vitest";
 import { isSilentAssistantTranscriptMessage } from "../../shared/chat-message-content.js";
 import { applyAssistantDeliveryDirectives } from "./transcript-assistant-delivery.js";
 
+const part = (text: string, phase: string, id?: string) => ({
+  type: "text",
+  text,
+  textSignature: JSON.stringify({ v: 1, ...(id ? { id } : {}), phase }),
+});
+function expectIdempotent(message: Parameters<typeof applyAssistantDeliveryDirectives>[0]) {
+  const snapshot = structuredClone(message);
+  applyAssistantDeliveryDirectives(message);
+  expect(message).toEqual(snapshot);
+}
+
 describe("assistant delivery normalization across native parts", () => {
   it.each([
     {
@@ -52,9 +63,7 @@ describe("assistant delivery normalization across native parts", () => {
       expect(block).toBe(identities[index]);
       expect(block.textSignature).toBe(`native-${index}`);
     }
-    const prepared = structuredClone(message);
-    applyAssistantDeliveryDirectives(message);
-    expect(message).toEqual(prepared);
+    expectIdempotent(message);
   });
 
   it.each([
@@ -68,18 +77,12 @@ describe("assistant delivery normalization across native parts", () => {
     ({ parts, display, hidden }) => {
       const message = {
         role: "assistant",
-        content: parts.map((text) => ({
-          type: "text",
-          text,
-          textSignature: JSON.stringify({ v: 1, phase: "final_answer" }),
-        })),
+        content: parts.map((text) => part(text, "final_answer")),
       };
       const prepared = applyAssistantDeliveryDirectives(message);
       expect("display" in prepared ? prepared.display : undefined).toBe(display);
       expect(isSilentAssistantTranscriptMessage(prepared)).toBe(hidden);
-      const snapshot = structuredClone(prepared);
-      applyAssistantDeliveryDirectives(prepared);
-      expect(prepared).toEqual(snapshot);
+      expectIdempotent(prepared);
     },
   );
 
@@ -98,16 +101,8 @@ describe("assistant delivery normalization across native parts", () => {
     const message = {
       role: "assistant",
       content: [
-        {
-          type: "text",
-          text: "```text\n[[reply_to:commentary]]",
-          textSignature: JSON.stringify({ v: 1, id: "progress", phase: "commentary" }),
-        },
-        {
-          type: "text",
-          text: "[[reply_to_current]]Final reply.",
-          textSignature: JSON.stringify({ v: 1, id: "answer", phase: "final_answer" }),
-        },
+        part("```text\n[[reply_to:commentary]]", "commentary", "progress"),
+        part("[[reply_to_current]]Final reply.", "final_answer", "answer"),
       ],
     };
     applyAssistantDeliveryDirectives(message);

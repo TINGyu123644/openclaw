@@ -25,16 +25,17 @@ import {
   resolveExistingAgentSessionStoreTargetsAsync,
 } from "./targets-runtime.js";
 
+const agents: OpenClawConfig["agents"] = {
+  ownership: "explicit",
+  defaults: { sessionStore: { agentId: "main" } },
+};
+
 it("discovers committed owners and stores without executing host SQL", async () => {
   await withOpenClawTestState({ label: "target-discovery-worker" }, async (state) => {
     const storePath = path.join(state.root, "shared.sqlite");
     const cfg: OpenClawConfig = {
       session: { store: storePath },
-      agents: {
-        ownership: "explicit",
-        defaults: { sessionStore: { agentId: "main" } },
-        entries: { main: {}, ops: {} },
-      },
+      agents: { ...agents, entries: { main: {}, ops: {} } },
     };
     const write = (agentId: string) =>
       replaceSessionEntry(
@@ -68,12 +69,12 @@ it.for(["canonical", "refused unsuffixed", "refused suffixed"] as const)(
       const storePath = layout === "canonical" ? undefined : state.statePath("shared.json");
       const cfg: OpenClawConfig = {
         agents: {
-          ownership: "explicit",
-          defaults: { sessionStore: { agentId: "main" } },
+          ...agents,
           entries: { slow: {}, main: {}, ...(storePath ? { fresh: {} } : {}) },
         },
         ...(storePath ? { session: { store: storePath } } : {}),
       };
+      const discover = () => resolveAllAgentSessionStoreTargetsAsync(cfg, state);
       const targets = ["slow", "main"].map((agentId) => ({
         agentId,
         storePath: storePath ?? path.join(state.sessionsDir(agentId), "sessions.json"),
@@ -120,26 +121,20 @@ it.for(["canonical", "refused unsuffixed", "refused suffixed"] as const)(
             { agentId: slow.agentId, path: slowDatabase, env: state.env },
             () => {},
           );
-          expect(await resolveAllAgentSessionStoreTargetsAsync(cfg, state)).toEqual(
-            expect.arrayContaining(targets),
-          );
+          expect(await discover()).toEqual(expect.arrayContaining(targets));
         },
       );
       try {
         await withinTest(entered.promise, signal);
         expect(getPendingOpenClawAgentDatabasePreparation(slowDatabase)).toBeDefined();
-        expect(
-          await withinTest(resolveAllAgentSessionStoreTargetsAsync(cfg, state), signal),
-        ).toEqual(targets.slice(1));
+        expect(await withinTest(discover(), signal)).toEqual(targets.slice(1));
         expect(fs.existsSync(state.statePath("shared.fresh.sqlite"))).toBe(false);
       } finally {
         release.resolve();
         openingGate.mockRestore();
         await opening;
       }
-      expect(await resolveAllAgentSessionStoreTargetsAsync(cfg, state)).toEqual(
-        expect.arrayContaining(targets),
-      );
+      expect(await discover()).toEqual(expect.arrayContaining(targets));
       expect(fs.existsSync(state.statePath("shared.fresh.sqlite"))).toBe(false);
     });
   },

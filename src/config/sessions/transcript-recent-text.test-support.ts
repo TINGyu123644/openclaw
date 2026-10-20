@@ -16,79 +16,56 @@ export function registerRecentTranscriptTextSnapshotTests(params: {
 }) {
   const { fixture, sessionId, sessionKey, createFixtureTranscriptScope, writeTranscriptStore } =
     params;
+  const scope = () => ({ agentId: "main", sessionKey, storePath: fixture.storePath() });
+  const read = (
+    options: Partial<Parameters<typeof readRecentUserAssistantTextForSession>[0]> = {},
+  ) => readRecentUserAssistantTextForSession({ ...scope(), ...options });
   it("reads recent context only from the active transcript branch", async () => {
     await writeTranscriptStore();
-    await persistSessionTranscriptTurn(
-      { agentId: "main", sessionId, sessionKey, storePath: fixture.storePath() },
-      {
-        updateMode: "none",
-        messages: [
-          transcriptMessage("root-user", null, {
-            role: "user",
-            content: "keep this branch",
-            timestamp: 1_000,
-          }),
-          transcriptMessage("active-reply", "root-user", {
-            role: "assistant",
-            content: "active answer",
-            timestamp: 2_000,
-          }),
-          transcriptMessage("abandoned-reply", "root-user", {
-            role: "assistant",
-            content: "abandoned answer",
-            timestamp: 3_000,
-          }),
-        ],
-      },
-    );
-    await appendTranscriptEvent(
-      { agentId: "main", sessionId, sessionKey, storePath: fixture.storePath() },
-      { type: "leaf", id: "active-leaf", parentId: "abandoned-reply", targetId: "active-reply" },
-    );
+    const target = { ...scope(), sessionId };
+    await persistSessionTranscriptTurn(target, {
+      updateMode: "none",
+      messages: (
+        [
+          ["root-user", null, "user", "keep this branch", 1_000],
+          ["active-reply", "root-user", "assistant", "active answer", 2_000],
+          ["abandoned-reply", "root-user", "assistant", "abandoned answer", 3_000],
+        ] as const
+      ).map(([id, parentId, role, content, timestamp]) =>
+        transcriptMessage(id, parentId, { role, content, timestamp }),
+      ),
+    });
+    await appendTranscriptEvent(target, {
+      type: "leaf",
+      id: "active-leaf",
+      parentId: "abandoned-reply",
+      targetId: "active-reply",
+    });
 
     const databasePath = resolveSqliteTargetFromSessionStorePath(fixture.storePath(), {
       agentId: "main",
     }).path;
     await waitForSessionTranscriptIndexReconcile({ agentId: "main", path: databasePath });
 
-    await expect(
-      readRecentUserAssistantTextForSession({
-        agentId: "main",
-        sessionKey,
-        storePath: fixture.storePath(),
-      }),
-    ).resolves.toEqual([
+    const expected = [
       { id: "root-user", role: "user", text: "keep this branch", timestamp: 1_000 },
       { id: "active-reply", role: "assistant", text: "active answer", timestamp: 2_000 },
-    ]);
+    ];
+    await expect(read()).resolves.toEqual(expected);
 
     const futureMessages = Array.from({ length: 260 }, (_, index) => ({
       eventId: `future-${index}`,
       parentId: index === 0 ? "active-reply" : `future-${index - 1}`,
       message: { role: "user" as const, content: `future ${index}`, timestamp: 10_000 + index },
     }));
-    await persistSessionTranscriptTurn(
-      { agentId: "main", sessionId, sessionKey, storePath: fixture.storePath() },
-      { updateMode: "none", messages: futureMessages },
-    );
-    await expect(
-      readRecentUserAssistantTextForSession({
-        agentId: "main",
-        sessionKey,
-        storePath: fixture.storePath(),
-        beforeTimestampMs: 2_500,
-        limit: 2,
-      }),
-    ).resolves.toEqual([
-      { id: "root-user", role: "user", text: "keep this branch", timestamp: 1_000 },
-      { id: "active-reply", role: "assistant", text: "active answer", timestamp: 2_000 },
-    ]);
+    await persistSessionTranscriptTurn(target, { updateMode: "none", messages: futureMessages });
+    await expect(read({ beforeTimestampMs: 2_500, limit: 2 })).resolves.toEqual(expected);
   });
 
   it("keeps recent user context on one snapshot while a reply is appended", async () => {
     await writeTranscriptStore();
-    const scope = createFixtureTranscriptScope();
-    await persistSessionTranscriptTurn(scope, {
+    const transcriptScope = createFixtureTranscriptScope();
+    await persistSessionTranscriptTurn(transcriptScope, {
       updateMode: "none",
       messages: Array.from({ length: 300 }, (_, index) =>
         transcriptMessage(`snapshot-${index}`, index === 0 ? null : `snapshot-${index - 1}`, {
@@ -104,7 +81,7 @@ export function registerRecentTranscriptTextSnapshotTests(params: {
       const page = await readPage(request, signal);
       if (!appended) {
         appended = true;
-        await persistSessionTranscriptTurn(scope, {
+        await persistSessionTranscriptTurn(transcriptScope, {
           updateMode: "none",
           messages: [
             transcriptMessage("appended-reply", "snapshot-299", {
@@ -117,15 +94,7 @@ export function registerRecentTranscriptTextSnapshotTests(params: {
       return page;
     });
     try {
-      await expect(
-        readRecentUserAssistantTextForSession({
-          agentId: "main",
-          sessionKey,
-          storePath: fixture.storePath(),
-          role: "user",
-          limit: 2,
-        }),
-      ).resolves.toEqual([
+      await expect(read({ role: "user", limit: 2 })).resolves.toEqual([
         { id: "snapshot-0", role: "user", text: "context 0" },
         { id: "snapshot-50", role: "user", text: "context 50" },
       ]);
