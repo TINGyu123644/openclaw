@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import * as mediaRoots from "../../media/channel-inbound-roots.js";
 import * as processExec from "../../process/exec.js";
+import { createCommandResult } from "../../test-utils/npm-spec-install-test-helpers.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { stageRemoteInboundMediaIfNeeded } from "./stage-remote-inbound-media.js";
 
@@ -12,7 +13,7 @@ it.each([
   { agentId: "work", remoteMediaMode: "sandbox-or-cache" },
   { agentId: undefined, remoteMediaMode: "cache" },
 ] as const)(
-  "stages remote global media after a transient SCP failure for $agentId in $remoteMediaMode mode",
+  "retries remote global media for $agentId ($remoteMediaMode)",
   async ({ agentId, remoteMediaMode }) => {
     await withOpenClawTestState({ label: "remote-media-owner" }, async (state) => {
       const cfg = {
@@ -25,7 +26,6 @@ it.each([
               mode: "all" as const,
               scope: "agent" as const,
               workspaceRoot: state.path("sandbox"),
-              workspaceAccess: "none" as const,
             },
           },
         },
@@ -42,14 +42,10 @@ it.each([
           if (!retrying) {
             await fs.writeFile(argv.at(-1)!, "remote attachment");
           }
-          return {
+          return createCommandResult({
             code: retrying ? 1 : 0,
-            stdout: "",
             stderr: retrying ? "remote attachment is still materializing" : "",
-            signal: null,
-            killed: false,
-            termination: "exit",
-          };
+          });
         });
       const ctx = {
         MediaRemoteHost: "user@gateway-host",
@@ -73,12 +69,11 @@ it.each([
         : path.join(fact.workspaceDir!, fact.path);
       try {
         expect(await fs.readFile(staged, "utf8")).toBe("remote attachment");
+        expect(path.isAbsolute(fact.path)).toBe(remoteMediaMode === "cache");
         if (remoteMediaMode === "cache") {
           expect(fact.workspaceDir).toContain(path.join("media", "remote-cache"));
-          expect(path.isAbsolute(fact.path)).toBe(true);
         } else {
           expect(fact.workspaceDir?.startsWith(state.path("sandbox"))).toBe(true);
-          expect(path.isAbsolute(fact.path)).toBe(false);
         }
         expect(await stage(state.workspaceDir)).toBe(false);
       } finally {

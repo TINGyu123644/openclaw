@@ -24,9 +24,7 @@ const settleRequester = vi.hoisted(() =>
 const runId = "waiting-progress-run";
 type ResultMeta = FinalizeReplyAgentRunInput["execution"]["result"]["meta"];
 
-function createContext(
-  meta: ResultMeta = { durationMs: 0, yielded: true },
-): FinalizeReplyAgentRunInput {
+function createContext(meta: Partial<ResultMeta> = { yielded: true }): FinalizeReplyAgentRunInput {
   const sessionKey = "agent:main:waiting-progress";
   const followupRun = createMockFollowupRun({
     originatingChannel: "discord",
@@ -38,17 +36,17 @@ function createContext(
     resetTriggered: false,
   });
   onTestFinished(() => replyOperation.complete());
+  const context = createTestFinalizationContext(followupRun, replyOperation);
   return {
-    ...createTestFinalizationContext(followupRun, replyOperation),
+    ...context,
     activeSessionStore: undefined,
     cfg: {},
     replyToChannel: "discord",
     execution: {
-      kind: "settled",
-      status: "ok",
+      ...context.execution,
       result: {
         payloads: [],
-        meta,
+        meta: { durationMs: 0, ...meta },
         acceptedSessionSpawns: [
           {
             runId: "index-worker-run",
@@ -57,9 +55,6 @@ function createContext(
           },
         ],
       },
-      resolved: { provider: followupRun.run.provider, model: followupRun.run.model },
-      fallback: { exhausted: false, attempts: [] },
-      autoCompactionCount: 0,
     },
     runId,
     sessionCtx: { Provider: "discord", Surface: "discord", To: "channel:C1" },
@@ -75,24 +70,11 @@ function captureContinuation(context: FinalizeReplyAgentRunInput) {
   };
 }
 
-async function prepareContinuation(
-  meta: ResultMeta = { durationMs: 0, continuationPending: true },
-) {
+async function prepareContinuation(meta: Partial<ResultMeta> = { continuationPending: true }) {
   const context = createContext(meta);
   const capture = captureContinuation(context);
   expect(await prepare("ordinary", context)).toEqual([]);
   return { context, ...capture, settlement: capture.settlement() };
-}
-
-function captureRawResponse(meta: ResultMeta, optional = false) {
-  const context = createContext(meta);
-  const onRawLlmResponse = vi.fn();
-  context.opts = { onRawLlmResponse };
-  if (optional) {
-    context.followupRun.run.terminalReplyExpectation = "optional";
-    context.execution.result.acceptedSessionSpawns = undefined;
-  }
-  return { context, onRawLlmResponse };
 }
 
 async function prepare(lane: "ordinary" | "queued", context: FinalizeReplyAgentRunInput) {
@@ -138,51 +120,51 @@ beforeEach(() => {
 });
 
 it("delivers an ordinary terminal failure", async () => {
-  const context = createContext({ durationMs: 0 });
+  const context = createContext({});
   context.execution.result.acceptedSessionSpawns = undefined;
   context.execution = {
     ...context.execution,
     status: "failed",
     terminalFailurePayload: markAgentRunFailureReplyPayload({ text: "Terminal failure" }),
   };
+  expect(await prepare("ordinary", context)).toMatchObject([
+    { text: "Terminal failure", isError: true },
+  ]);
+});
+
+const blockedText = "Blocked by before_agent_run policy";
+it.each([
+  ["silent", { terminalReply: { disposition: "silent" } }, true],
+  ["message-tool sentinel", { finalAssistantRawText: "NO_REPLY" }, true],
+  [
+    "hook block",
+    {
+      livenessState: "blocked",
+      finalAssistantRawText: blockedText,
+      error: { kind: "hook_block", message: blockedText },
+    },
+    false,
+  ],
+] as const)("captures only model text: %s", async (kind, meta, optional) => {
+  const context = createContext(meta);
+  const onRawLlmResponse = vi.fn();
+  context.opts = { onRawLlmResponse };
+  if (optional) {
+    context.followupRun.run.terminalReplyExpectation = "optional";
+    context.execution.result.acceptedSessionSpawns = undefined;
+  }
+  if (kind === "message-tool sentinel") {
+    context.execution.result.messagingToolSourceReplyPayloads = [
+      { text: "delivered by message tool", sourceReplyFinal: true },
+    ];
+  }
   const payloads = await prepare("ordinary", context);
-  expect(payloads.map((payload) => payload.text)).toEqual(["Terminal failure"]);
-  expect(payloads[0]?.isError).toBe(true);
-});
-
-it("does not capture a suppressed final reply", async () => {
-  const { context, onRawLlmResponse } = captureRawResponse(
-    { durationMs: 0, terminalReply: { disposition: "silent" } },
-    true,
+  if (optional) {
+    expect(payloads).toEqual([]);
+  }
+  expect(onRawLlmResponse.mock.calls).toEqual(
+    kind === "message-tool sentinel" ? [["NO_REPLY"]] : [],
   );
-
-  expect(await prepare("ordinary", context)).toEqual([]);
-  expect(onRawLlmResponse).not.toHaveBeenCalled();
-});
-
-it("captures a message-tool sentinel before the empty-payload return", async () => {
-  const { context, onRawLlmResponse } = captureRawResponse(
-    { durationMs: 0, finalAssistantRawText: "NO_REPLY" },
-    true,
-  );
-  context.execution.result.messagingToolSourceReplyPayloads = [
-    { text: "delivered by message tool", sourceReplyFinal: true },
-  ];
-
-  expect(await prepare("ordinary", context)).toEqual([]);
-  expect(onRawLlmResponse).toHaveBeenCalledWith("NO_REPLY");
-});
-
-it("does not capture hook-block rejection text as a model response", async () => {
-  const { context, onRawLlmResponse } = captureRawResponse({
-    durationMs: 0,
-    livenessState: "blocked",
-    finalAssistantRawText: "Blocked by before_agent_run policy",
-    error: { kind: "hook_block", message: "Blocked by before_agent_run policy" },
-  });
-
-  await prepare("ordinary", context);
-  expect(onRawLlmResponse).not.toHaveBeenCalled();
 });
 
 describe.each(["ordinary", "queued"] as const)("%s waiting status delivery", (lane) => {
@@ -234,7 +216,6 @@ it.each([true, false])(
   "settles an implicit continuation once after delivery=%s",
   async (delivered) => {
     const context = createContext({
-      durationMs: 0,
       continuationPending: true,
       yieldAcknowledgment: " ",
     });
@@ -261,7 +242,7 @@ it.each([true, false])(
 it.each(["ordinary", "queued"] as const)(
   "keeps a %s unauthored waiting status silent while a result is required",
   async (lane) => {
-    const context = createContext({ durationMs: 0, continuationPending: true });
+    const context = createContext({ continuationPending: true });
     context.followupRun.run.terminalReplyExpectation = "result-required";
 
     expect(await prepare(lane, context)).toEqual([]);
@@ -272,7 +253,6 @@ it.each(["delivered", "cancelled", "aborted"] as const)(
   "settles an explicitly silent child continuation after %s",
   async (outcome) => {
     const { context, settlement } = await prepareContinuation({
-      durationMs: 0,
       continuationPending: true,
       finalAssistantRawText: "NO_REPLY",
       terminalReply: { disposition: "silent" },

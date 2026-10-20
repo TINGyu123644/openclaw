@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import { sanitizeChatHistoryMessages } from "../../gateway/chat-display-projection.sanitize.js";
 import { buildPersistedUserTurnMessage } from "../../sessions/user-turn-transcript.message.js";
@@ -37,8 +37,8 @@ async function mediaFixture(home: string) {
 
 it.each(["settled", "failed", "aborted"] as const)(
   "settles attribution before attachment staging (%s)",
-  async (outcome) => {
-    await withSandboxMediaTempHome("openclaw-attribution-media-", async (home) => {
+  (outcome) =>
+    withSandboxMediaTempHome("openclaw-attribution-media-", async (home) => {
       const fixture = await mediaFixture(home);
       const { workspaceDir } = fixture;
       sandboxMocks.ensureSandboxWorkspaceForSession.mockResolvedValue(null);
@@ -82,59 +82,49 @@ it.each(["settled", "failed", "aborted"] as const)(
         baseline.resolve();
         await pending.catch(() => undefined);
       }
-    });
-  },
+    }),
 );
 
-it.each([
-  { sandbox: false, reference: "path-only" },
-  { sandbox: false, reference: "physical-alias" },
-  { sandbox: false, reference: "managed-alias" },
-  { sandbox: false, reference: "file-alias" },
-  { sandbox: true, reference: "path-only" },
-  { sandbox: true, reference: "physical-alias" },
-  { sandbox: true, reference: "managed-alias" },
-  { sandbox: true, reference: "file-alias" },
-])(
-  "keeps $reference image fetchable in history (sandbox=$sandbox)",
-  async ({ sandbox, reference }) => {
-    await withSandboxMediaTempHome("openclaw-staged-history-", async (home) => {
-      const fixture = await mediaFixture(home);
-      const { source, ctx, sessionCtx, workspaceDir } = fixture;
-      const uri = "media://inbound/synthetic.png";
-      const sandboxDir = path.join(home, "sandbox");
-      sandboxMocks.ensureSandboxWorkspaceForSession.mockResolvedValue(
-        sandbox ? { workspaceDir: sandboxDir, containerWorkdir: "/work" } : null,
-      );
-      ctx.media = [
-        {
-          path: reference === "managed-alias" ? uri : source,
-          ...(reference === "physical-alias" ? { url: source } : {}),
-          ...(reference === "managed-alias" ? { url: uri } : {}),
-          ...(reference === "file-alias" ? { url: pathToFileURL(source).href } : {}),
-          contentType: "image/png",
-          kind: "image",
-        },
-      ];
-      const result = await stageSandboxMedia(fixture);
-      const stagedPath = result.staged.get(0)!;
-      expect(stagedPath).toBeTruthy();
-      expect(stagedPath).not.toBe(source);
-      expect(
-        await fs.readFile(path.resolve(sandbox ? sandboxDir : workspaceDir, stagedPath), "utf8"),
-      ).toBe("synthetic image bytes");
-      expect(sessionCtx.media).toEqual(ctx.media);
+describe.each([false, true])("history (sandbox=%s)", (sandbox) => {
+  it.each(["path-only", "physical-alias", "managed-alias", "file-alias"])(
+    "keeps %s images fetchable",
+    (reference) =>
+      withSandboxMediaTempHome("openclaw-staged-history-", async (home) => {
+        const fixture = await mediaFixture(home);
+        const { source, ctx, sessionCtx, workspaceDir } = fixture;
+        const uri = "media://inbound/synthetic.png";
+        const sandboxDir = path.join(home, "sandbox");
+        sandboxMocks.ensureSandboxWorkspaceForSession.mockResolvedValue(
+          sandbox ? { workspaceDir: sandboxDir, containerWorkdir: "/work" } : null,
+        );
+        ctx.media = [
+          {
+            path: reference === "managed-alias" ? uri : source,
+            ...(reference === "physical-alias" ? { url: source } : {}),
+            ...(reference === "managed-alias" ? { url: uri } : {}),
+            ...(reference === "file-alias" ? { url: pathToFileURL(source).href } : {}),
+            contentType: "image/png",
+            kind: "image",
+          },
+        ];
+        const result = await stageSandboxMedia(fixture);
+        const stagedPath = result.staged.get(0)!;
+        expect(stagedPath).not.toBe(source);
+        expect(
+          await fs.readFile(path.resolve(sandbox ? sandboxDir : workspaceDir, stagedPath), "utf8"),
+        ).toBe("synthetic image bytes");
+        expect(sessionCtx.media).toEqual(ctx.media);
 
-      const persisted = buildPersistedUserTurnMessage({
-        text: "Synthetic attachment",
-        media: ctx.media,
-      });
-      const [history] = sanitizeChatHistoryMessages([persisted]);
-      expect(history).toMatchObject({
-        __openclaw: { media: [{ url: uri, contentType: "image/png", kind: "image" }] },
-      });
-      expect(JSON.stringify(history)).not.toContain(home);
-      expect(JSON.stringify(history)).not.toContain("openclaw-staged-");
-    });
-  },
-);
+        const persisted = buildPersistedUserTurnMessage({
+          text: "Synthetic attachment",
+          media: ctx.media,
+        });
+        const [history] = sanitizeChatHistoryMessages([persisted]);
+        expect(history).toMatchObject({
+          __openclaw: { media: [{ url: uri, contentType: "image/png", kind: "image" }] },
+        });
+        expect(JSON.stringify(history)).not.toContain(home);
+        expect(JSON.stringify(history)).not.toContain("openclaw-staged-");
+      }),
+  );
+});
