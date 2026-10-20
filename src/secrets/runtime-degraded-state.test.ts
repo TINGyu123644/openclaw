@@ -10,7 +10,17 @@ import {
   SecretSurfaceUnavailableError,
   setActiveCredentialDegradedOwner,
   setActiveDegradedSecretOwners,
+  type DegradedSecretOwner,
 } from "./runtime-degraded-state.js";
+
+const providerOwner: DegradedSecretOwner = {
+  ownerKind: "provider",
+  ownerId: "openai",
+  state: "unavailable",
+  paths: ["models.providers.openai.apiKey"],
+  refKeys: ["env:default:OPENAI_API_KEY"],
+  reason: "secret reference was not found",
+};
 
 afterEach(() => {
   clearActiveCredentialDegradedOwner("account", "telegram:work");
@@ -44,16 +54,9 @@ describe("runtime degraded SecretRef owners", () => {
   });
 
   it("publishes owner metadata and throws the typed unavailable error", () => {
-    const owner = {
-      ownerKind: "provider" as const,
-      ownerId: "openai",
-      state: "unavailable" as const,
-      paths: ["models.providers.openai.apiKey"],
-      refKeys: ["env:default:OPENAI_API_KEY"],
-      reason: "secret reference was not found",
-      providerFailures: [{ source: "env" as const, provider: "default" }],
-    };
-    setActiveDegradedSecretOwners([owner]);
+    setActiveDegradedSecretOwners([
+      { ...providerOwner, providerFailures: [{ source: "env", provider: "default" }] },
+    ]);
 
     expect(listActiveDegradedSecretOwners()).toEqual([
       expect.objectContaining({
@@ -72,11 +75,7 @@ describe("runtime degraded SecretRef owners", () => {
   it("records strict resolution owner metadata", () => {
     const error = new Error("private provider details");
     const owner = {
-      ownerKind: "provider" as const,
-      ownerId: "openai",
-      state: "unavailable" as const,
-      paths: ["models.providers.openai.apiKey"],
-      refKeys: ["env:default:OPENAI_API_KEY"],
+      ...providerOwner,
       reason: "secret provider failed",
       degradationState: "stale" as const,
       failureMatched: true,
@@ -92,16 +91,7 @@ describe("runtime degraded SecretRef owners", () => {
   });
 
   it("merges runtime-discovered credential owners and clears them independently", () => {
-    setActiveDegradedSecretOwners([
-      {
-        ownerKind: "provider",
-        ownerId: "openai",
-        state: "unavailable",
-        paths: ["models.providers.openai.apiKey"],
-        refKeys: ["env:default:OPENAI_API_KEY"],
-        reason: "secret reference was not found",
-      },
-    ]);
+    setActiveDegradedSecretOwners([providerOwner]);
     setActiveCredentialDegradedOwner({
       ownerKind: "account",
       ownerId: "telegram:work",
@@ -117,15 +107,7 @@ describe("runtime degraded SecretRef owners", () => {
     ]);
 
     setActiveDegradedSecretOwners([
-      {
-        ownerKind: "provider",
-        ownerId: "openai",
-        state: "unavailable",
-        degradationState: "stale",
-        paths: ["models.providers.openai.apiKey"],
-        refKeys: ["env:default:OPENAI_API_KEY"],
-        reason: "secret provider failed",
-      },
+      { ...providerOwner, degradationState: "stale", reason: "secret provider failed" },
     ]);
 
     expect(listActiveDegradedSecretOwners().map((owner) => owner.ownerId)).toEqual([

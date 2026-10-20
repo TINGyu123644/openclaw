@@ -4,14 +4,15 @@ import { asConfig, setupSecretsRuntimeSnapshotTestHooks } from "./runtime.test-s
 
 const { prepareSecretsRuntimeSnapshot } = setupSecretsRuntimeSnapshotTestHooks();
 
-function expectWarningPaths(
-  snapshot: Awaited<ReturnType<typeof prepareSecretsRuntimeSnapshot>>,
-  expectedPaths: string[],
-): void {
-  const warningPaths = new Set(snapshot.warnings.map((warning) => warning.path));
-  for (const expectedPath of expectedPaths) {
-    expect(warningPaths.has(expectedPath)).toBe(true);
-  }
+const connection = { source: "env", provider: "default", id: "DATABASE_DSN" };
+function prepare(config: unknown, env = {}, allowUnavailableSecretOwners = false) {
+  return prepareSecretsRuntimeSnapshot({
+    config: asConfig(config),
+    env,
+    allowUnavailableSecretOwners,
+    includeAuthStoreRefs: false,
+    loadablePluginOrigins: new Map(),
+  });
 }
 
 describe("secrets runtime snapshot inactive core surfaces", () => {
@@ -41,13 +42,10 @@ describe("secrets runtime snapshot inactive core surfaces", () => {
   ])(
     "resolves the database connection only for an effective PostgreSQL family ($name)",
     async ({ database, active }) => {
-      const connection = { source: "env", provider: "default", id: "DATABASE_DSN" };
-      const snapshot = await prepareSecretsRuntimeSnapshot({
-        config: asConfig({ database: { ...database, postgres: { connection } } }),
-        env: active ? { DATABASE_DSN: "postgresql:///fixture" } : {},
-        includeAuthStoreRefs: false,
-        loadablePluginOrigins: new Map(),
-      });
+      const snapshot = await prepare(
+        { database: { ...database, postgres: { connection } } },
+        active ? { DATABASE_DSN: "postgresql:///fixture" } : {},
+      );
       expect(snapshot.config.database?.postgres?.connection).toEqual(
         active ? "postgresql:///fixture" : connection,
       );
@@ -59,50 +57,29 @@ describe("secrets runtime snapshot inactive core surfaces", () => {
 
   it("refuses a missing PostgreSQL connection secret even with owner isolation enabled", async () => {
     await expect(
-      prepareSecretsRuntimeSnapshot({
-        config: asConfig({
-          database: {
-            engine: "postgres",
-            postgres: {
-              connection: { source: "env", provider: "default", id: "DATABASE_DSN" },
-            },
-          },
-        }),
-        env: {},
-        includeAuthStoreRefs: false,
-        allowUnavailableSecretOwners: true,
-        loadablePluginOrigins: new Map(),
-      }),
+      prepare({ database: { engine: "postgres", postgres: { connection } } }, {}, true),
     ).rejects.toThrow('Environment variable "DATABASE_DSN" is missing or empty.');
   });
 
   it("skips inactive core refs and emits diagnostics", async () => {
-    const snapshot = await prepareSecretsRuntimeSnapshot({
-      config: asConfig({
-        memory: {
-          search: {
-            enabled: false,
-            remote: {
-              apiKey: { source: "env", provider: "default", id: "DISABLED_MEMORY_API_KEY" },
-            },
-          },
+    const snapshot = await prepare({
+      memory: {
+        search: {
+          enabled: false,
+          remote: { apiKey: { source: "env", provider: "default", id: "DISABLED_MEMORY_API_KEY" } },
         },
-
-        agents: {
-          defaults: {},
+      },
+      agents: { defaults: {} },
+      gateway: {
+        auth: {
+          mode: "token",
+          password: { source: "env", provider: "default", id: "DISABLED_GATEWAY_PASSWORD" },
         },
-        gateway: {
-          auth: {
-            mode: "token",
-            password: { source: "env", provider: "default", id: "DISABLED_GATEWAY_PASSWORD" },
-          },
-        },
-      }),
-      env: {},
-      includeAuthStoreRefs: false,
-      loadablePluginOrigins: new Map(),
+      },
     });
 
-    expectWarningPaths(snapshot, ["memory.search.remote.apiKey", "gateway.auth.password"]);
+    expect(snapshot.warnings.map(({ path }) => path)).toEqual(
+      expect.arrayContaining(["memory.search.remote.apiKey", "gateway.auth.password"]),
+    );
   });
 });

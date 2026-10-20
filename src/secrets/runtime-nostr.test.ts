@@ -8,17 +8,13 @@ import { asConfig, setupSecretsRuntimeSnapshotTestHooks } from "./runtime.test-s
 
 const { prepareSecretsRuntimeSnapshot } = setupSecretsRuntimeSnapshotTestHooks();
 const NOSTR_TEST_PRIVATE_KEY = "1".repeat(64);
+const envRef = (id: string) => ({ source: "env", provider: "default", id }) as const;
 
 describe("Nostr SecretRef runtime ownership", () => {
   it("materializes a private key for the normalized account owner", async () => {
     const snapshot = await prepareSecretsRuntimeSnapshot({
       config: asConfig({
-        channels: {
-          nostr: {
-            defaultAccount: "Team.A",
-            privateKey: { source: "env", provider: "default", id: "NOSTR_ENV_KEY" },
-          },
-        },
+        channels: { nostr: { defaultAccount: "Team.A", privateKey: envRef("NOSTR_ENV_KEY") } },
       }),
       env: { NOSTR_ENV_KEY: NOSTR_TEST_PRIVATE_KEY },
       includeAuthStoreRefs: false,
@@ -33,14 +29,12 @@ describe("Nostr SecretRef runtime ownership", () => {
   });
 
   it("keeps a missing named account cold while its healthy channel sibling remains available", async () => {
-    const missingRef = { source: "env", provider: "default", id: "MISSING_NOSTR_KEY" } as const;
+    const missingRef = envRef("MISSING_NOSTR_KEY");
     const snapshot = await prepareSecretsRuntimeSnapshot({
       config: asConfig({
         channels: {
           nostr: { defaultAccount: "Team.A", privateKey: missingRef },
-          telegram: {
-            botToken: { source: "env", provider: "default", id: "HEALTHY_TELEGRAM_TOKEN" },
-          },
+          telegram: { botToken: envRef("HEALTHY_TELEGRAM_TOKEN") },
         },
       }),
       env: {
@@ -67,11 +61,7 @@ describe("Nostr SecretRef runtime ownership", () => {
       }),
     ]);
 
-    activateSecretsRuntimeSnapshotState({
-      snapshot,
-      refreshContext: null,
-      refreshHandler: null,
-    });
+    activateSecretsRuntimeSnapshotState({ snapshot, refreshContext: null, refreshHandler: null });
     expect(() => assertSecretOwnerAvailable("account", "nostr:team-a")).toThrow(
       SecretSurfaceUnavailableError,
     );
