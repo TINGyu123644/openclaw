@@ -1,4 +1,5 @@
 import { beforeEach, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import type { OpenClawPluginNodeHostCommandIo } from "../plugins/types.js";
 import type { NodeHostClient } from "./client.js";
 
@@ -24,17 +25,9 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("../infra/path-env.js", () => ({
-  ensureOpenClawCliOnPath: vi.fn(),
-}));
-
-vi.mock("./invoke.js", () => ({
-  handleInvoke: mocks.handleInvoke,
-}));
-
-vi.mock("./mcp.js", () => ({
-  startNodeHostMcpManager: mocks.startMcp,
-}));
+vi.mock("../infra/path-env.js", () => ({ ensureOpenClawCliOnPath: vi.fn() }));
+vi.mock("./invoke.js", () => ({ handleInvoke: mocks.handleInvoke }));
+vi.mock("./mcp.js", () => ({ startNodeHostMcpManager: mocks.startMcp }));
 
 vi.mock("./node-invoke-progress.js", () => ({
   createNodeInvokeProgressWriter: vi.fn(() => ({
@@ -73,9 +66,7 @@ vi.mock("./plugin-node-host.js", () => ({
   })),
 }));
 
-vi.mock("./skills.js", () => ({
-  scanNodeHostedSkills: vi.fn(() => []),
-}));
+vi.mock("./skills.js", () => ({ scanNodeHostedSkills: vi.fn(() => []) }));
 
 // Retain local bindings after mock registration for Vitest's export transform.
 const { prepareNodeHostRuntime } = await import("./runtime.js");
@@ -125,10 +116,7 @@ export async function startRuntime(
 export function holdInvoke(onCommand?: (io: OpenClawPluginNodeHostCommandIo) => void) {
   let io: OpenClawPluginNodeHostCommandIo | undefined;
   let signal: AbortSignal | undefined;
-  let release: (() => void) | undefined;
-  const held = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  const held = createDeferred();
   mocks.handleInvoke.mockImplementationOnce(async (...args: unknown[]) => {
     const runtime = args[4] as {
       pluginCommandIo?: OpenClawPluginNodeHostCommandIo;
@@ -139,7 +127,7 @@ export function holdInvoke(onCommand?: (io: OpenClawPluginNodeHostCommandIo) => 
     if (io) {
       onCommand?.(io);
     }
-    await held;
+    await held.promise;
   });
   return {
     get io() {
@@ -148,6 +136,6 @@ export function holdInvoke(onCommand?: (io: OpenClawPluginNodeHostCommandIo) => 
     get signal() {
       return signal;
     },
-    release: () => release?.(),
+    release: () => held.resolve(),
   };
 }

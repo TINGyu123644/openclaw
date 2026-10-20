@@ -22,9 +22,7 @@ import {
 } from "./node-worker-supervisor.test-support.js";
 import { prepareNodeHostRuntime } from "./runtime.js";
 
-vi.mock("../infra/path-env.js", () => ({
-  ensureOpenClawCliOnPath: vi.fn(),
-}));
+vi.mock("../infra/path-env.js", () => ({ ensureOpenClawCliOnPath: vi.fn() }));
 
 vi.mock("./mcp.js", () => ({
   startNodeHostMcpManager: vi.fn(async () => ({
@@ -108,6 +106,8 @@ describe("node-host runtime worker supervisor lifetime", () => {
         }
       },
     });
+    const invoke = (id: string, command: string, params: unknown) =>
+      runtime.invoke({ id, nodeId: "node-1", command, paramsJSON: JSON.stringify(params) });
     runtime.updateGatewayConnection({ url: "ws://127.0.0.1:18789" });
     const store = new NodeWorkerLaunchStore(new NodeWorkerJournalWorker({ env: fixture.env }));
 
@@ -117,12 +117,7 @@ describe("node-host runtime worker supervisor lifetime", () => {
         { total: 2, available: 0 },
         { total: 2, available: 2 },
       ]);
-      const launching = runtime.invoke({
-        id: "invoke-launch",
-        nodeId: "node-1",
-        command: NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND,
-        paramsJSON: JSON.stringify(input),
-      });
+      const launching = invoke("invoke-launch", NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND, input);
       // The journal becomes running before startup settles. Hold the completed
       // launch response so cancellation exercises the admitted worker's lifetime.
       await launchResponseEntered.promise;
@@ -135,11 +130,8 @@ describe("node-host runtime worker supervisor lifetime", () => {
       await launching;
       expect(await runtime.tryPauseForUpdate()).toBe(false);
 
-      await runtime.invoke({
-        id: "invoke-status",
-        nodeId: "node-1",
-        command: NODE_WORKER_SUPERVISOR_STATUS_COMMAND,
-        paramsJSON: JSON.stringify({ launchId: input.launchId }),
+      await invoke("invoke-status", NODE_WORKER_SUPERVISOR_STATUS_COMMAND, {
+        launchId: input.launchId,
       });
       const status = responses.find(
         ({ method, params }) =>
@@ -151,12 +143,7 @@ describe("node-host runtime worker supervisor lifetime", () => {
         state: "running",
       });
 
-      await runtime.invoke({
-        id: "invoke-replay",
-        nodeId: "node-1",
-        command: NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND,
-        paramsJSON: JSON.stringify(input),
-      });
+      await invoke("invoke-replay", NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND, input);
       expect((await store.get(input.launchId))?.state).toBe("running");
     } finally {
       launchResponseHeld.resolve();

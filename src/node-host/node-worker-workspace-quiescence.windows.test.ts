@@ -80,17 +80,19 @@ describe.runIf(process.platform === "win32")("Windows node-host quiescence", () 
         database.close();
       }
     };
+    const acquire = (nonce: string) => command({ action: "acquire", nonce, timeoutMs: 30_000 });
+    const renew = (nonce: string) =>
+      command({ action: "renew", nonce, timeoutMs: 30_000, validationMode: "final" });
+    const release = (nonce: string) => command({ action: "release", nonce });
     const nonce = "a".repeat(32);
     const spawned = vi.spyOn(childProcess, "spawn");
     syncBuiltinESMExports();
     try {
-      await expect(command({ action: "acquire", nonce, timeoutMs: 30_000 })).resolves.toMatchObject(
-        {
-          code: 0,
-          stdout: "quiesced " + nonce + "\n",
-          workspaceDir,
-        },
-      );
+      await expect(acquire(nonce)).resolves.toMatchObject({
+        code: 0,
+        stdout: `quiesced ${nonce}\n`,
+        workspaceDir,
+      });
       expect(readLease()).toMatchObject({ nonce, sharedHost: true, processes: [], watchdog: null });
       const helperCall = spawned.mock.calls.findIndex(
         ([_command, argv]) => Array.isArray(argv) && argv.includes("owned") && argv.includes(nonce),
@@ -128,49 +130,26 @@ child.once("message", () => {
       expect(runtime.processes.hasActiveWork()).toBe(false);
       expect(helper.exitCode).toBeNull();
       expect(readLease()).toEqual(before);
-      await expect(
-        command({ action: "acquire", nonce: "b".repeat(32), timeoutMs: 30_000 }),
-      ).rejects.toThrow("lease is already active");
-      await expect(
-        command({
-          action: "renew",
-          nonce: "b".repeat(32),
-          timeoutMs: 30_000,
-          validationMode: "final",
-        }),
-      ).rejects.toThrow();
-      await expect(command({ action: "release", nonce: "b".repeat(32) })).rejects.toThrow(
-        "no longer active",
-      );
+      const wrongNonce = "b".repeat(32);
+      await expect(acquire(wrongNonce)).rejects.toThrow("lease is already active");
+      await expect(renew(wrongNonce)).rejects.toThrow();
+      await expect(release(wrongNonce)).rejects.toThrow("no longer active");
       expect(readLease()).toEqual(before);
       // App retirement must not retire infrastructure lease control.
       await runtime.processes.stopEnvironment({ ...identity, ownerEpoch: 1 });
-      await expect(
-        command({ action: "renew", nonce, timeoutMs: 30_000, validationMode: "final" }),
-      ).resolves.toMatchObject({ code: 0, stdout: "renewed " + nonce + "\n" });
+      await expect(renew(nonce)).resolves.toMatchObject({ code: 0, stdout: `renewed ${nonce}\n` });
       expect(readLease()).toMatchObject({ nonce, processes: [], watchdog: null });
-      await expect(command({ action: "release", nonce })).resolves.toMatchObject({ code: 0 });
+      await expect(release(nonce)).resolves.toMatchObject({ code: 0 });
       expect(readLease()).toBeUndefined();
       const controlSpawns = spawned.mock.calls.length;
       const nextNonce = "c".repeat(32);
-      await command({ action: "acquire", nonce: nextNonce, timeoutMs: 30_000 });
+      await acquire(nextNonce);
       expect(readLease()).toMatchObject({ nonce: nextNonce, processes: [], watchdog: null });
-      for (const action of ["renew", "release"] as const) {
-        await expect(
-          command(
-            action === "renew"
-              ? { action, nonce, timeoutMs: 30_000, validationMode: "final" }
-              : { action, nonce },
-          ),
-        ).rejects.toThrow("no longer active");
+      for (const action of [renew, release]) {
+        await expect(action(nonce)).rejects.toThrow("no longer active");
       }
-      await command({
-        action: "renew",
-        nonce: nextNonce,
-        timeoutMs: 30_000,
-        validationMode: "final",
-      });
-      await command({ action: "release", nonce: nextNonce });
+      await renew(nextNonce);
+      await release(nextNonce);
       expect(spawned).toHaveBeenCalledTimes(controlSpawns);
       expect(helper.exitCode).toBeNull();
       await runtime.applyRetainSnapshot(
