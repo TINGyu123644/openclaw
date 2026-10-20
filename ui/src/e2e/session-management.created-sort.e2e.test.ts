@@ -2,66 +2,51 @@ import path from "node:path";
 import { expect, it } from "vitest";
 import { pauseVirtualClock } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiSessionRow as sessionRow } from "../test-helpers/control-ui-session-fixtures.ts";
-import {
-  captureUiProof,
-  captureUiProofEnabled,
-  createSessionManagementE2eSuite,
-  controlUiSessionUrl,
-  installMockGateway,
-  sessionsListResponse,
-} from "./session-management.test-support.ts";
+import { createControlUiE2eContextOptions } from "./control-ui-e2e-suite.test-support.ts";
+import * as ui from "./session-management.compact.test-support.ts";
+import * as support from "./session-management.test-support.ts";
 
-const suite = createSessionManagementE2eSuite();
+const suite = support.createSessionManagementE2eSuite();
 
 suite.define(() => {
   it("keeps externally discovered newest sessions above Show more", async () => {
     const baseTime = Date.parse("2026-08-14T18:00:00.000Z");
-    const olderRows = Array.from({ length: 10 }, (_, index) => ({
-      ...sessionRow(
-        `agent:main:older-${index}`,
-        `Older session ${index}`,
-        baseTime - index * 1_000,
-      ),
-      createdAt: baseTime - index * 1_000,
-    }));
+    const createdRow = (key: string, label: string, createdAt: number) => ({
+      ...sessionRow(key, label, createdAt),
+      createdAt,
+    });
+    const olderRows = Array.from({ length: 10 }, (_, i) =>
+      createdRow(`agent:main:older-${i}`, `Older session ${i}`, baseTime - i * 1_000),
+    );
     const newestKey = "agent:main:external-new";
-    const newestRow = {
-      ...sessionRow(newestKey, "External newest", baseTime + 1_000),
-      createdAt: baseTime + 1_000,
-    };
-    // Sticky membership: rows the operator already saw stay visible when a
-    // newer session enters the page, so the full prior page remains.
+    const newestRow = createdRow(newestKey, "External newest", baseTime + 1_000);
+    // Sticky membership preserves the full prior page when a newer session enters.
     const expectedVisibleKeys = [newestKey, ...olderRows.map((row) => row.key)];
     const context = await suite.browser.newContext({
-      locale: "en-US",
-      serviceWorkers: "block",
-      viewport: { height: 900, width: 1280 },
-      recordVideo: captureUiProofEnabled
+      ...createControlUiE2eContextOptions(),
+      recordVideo: support.captureUiProofEnabled
         ? { dir: suite.artifactDir, size: { height: 900, width: 1280 } }
         : undefined,
     });
     const page = await context.newPage();
     const proofVideo = page.video();
-    const gateway = await installMockGateway(page, {
-      methodResponses: {
-        "sessions.list": sessionsListResponse(olderRows),
-      },
-      sessionKey: olderRows[0]?.key,
-    });
+    const gateway = await ui.installSessionRows(page, olderRows, { sessionKey: olderRows[0]?.key });
 
     try {
-      await page.goto(controlUiSessionUrl(suite.server.baseUrl, olderRows[0]!.key));
+      await page.goto(support.controlUiSessionUrl(suite.server.baseUrl, olderRows[0]!.key));
       const rows = page.locator(".sidebar-recent-session");
       await expect.poll(() => rows.count(), { timeout: 10_000 }).toBe(10);
       const retainedSessionKey = olderRows[5]!.key;
       await rows.nth(5).evaluate((row) => Reflect.set(row, "__retainedSessionRow", true));
-      await captureUiProof(suite, page, "sidebar-created-sort-before-refresh.png");
+      await support.captureUiProof(suite, page, "sidebar-created-sort-before-refresh.png");
       const initialListCount = (await gateway.getRequests("sessions.list")).length;
 
       await page.clock.install();
       await pauseVirtualClock(page);
 
-      await gateway.setSessionsListResponse(sessionsListResponse([...olderRows, newestRow]));
+      await gateway.setSessionsListResponse(
+        support.sessionsListResponse([...olderRows, newestRow]),
+      );
       await gateway.emitGatewayEvent("sessions.changed", {
         key: newestKey,
         kind: "direct",
@@ -72,7 +57,7 @@ suite.define(() => {
       // Cross the full refresh window and deliver its nested mock response timer.
       await page.clock.runFor(5_001);
       await expect
-        .poll(async () => (await gateway.getRequests("sessions.list")).length)
+        .poll(() => ui.requestCount(gateway, "sessions.list"))
         .toBeGreaterThan(initialListCount);
       await page.clock.resume();
       await expect
@@ -87,14 +72,7 @@ suite.define(() => {
           .locator(`.sidebar-recent-session[data-session-key="${retainedSessionKey}"]`)
           .evaluate((row) => Reflect.get(row, "__retainedSessionRow")),
       ).toBe(true);
-      await captureUiProof(suite, page, "sidebar-created-sort-after-refresh.png");
-
-      expect(await rows.count()).toBe(11);
-      expect(
-        await rows.evaluateAll((elements) =>
-          elements.map((element) => element.getAttribute("data-session-key")),
-        ),
-      ).toEqual(expectedVisibleKeys);
+      await support.captureUiProof(suite, page, "sidebar-created-sort-after-refresh.png");
     } finally {
       await context.close();
       if (proofVideo) {

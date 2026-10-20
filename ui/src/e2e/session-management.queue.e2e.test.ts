@@ -1,16 +1,11 @@
 import path from "node:path";
 import { expect, it } from "vitest";
 import { createControlUiSessionRow as sessionRow } from "../test-helpers/control-ui-session-fixtures.ts";
-import {
-  captureUiProof,
-  captureUiProofEnabled,
-  controlUiSessionUrl,
-  createSessionManagementE2eSuite,
-  installMockGateway,
-  sessionsListResponse,
-} from "./session-management.test-support.ts";
+import { createControlUiE2eContextOptions } from "./control-ui-e2e-suite.test-support.ts";
+import * as ui from "./session-management.compact.test-support.ts";
+import * as support from "./session-management.test-support.ts";
 
-const suite = createSessionManagementE2eSuite();
+const suite = support.createSessionManagementE2eSuite();
 
 suite.define(() => {
   it.each([
@@ -20,57 +15,51 @@ suite.define(() => {
     const mainKey = "agent:main:main";
     const queuedKey = "agent:main:queued-repair";
     const context = await suite.browser.newContext({
+      ...createControlUiE2eContextOptions(),
       colorScheme: "dark",
-      locale: "en-US",
-      serviceWorkers: "block",
-      viewport: { height: 900, width: 1280 },
-      recordVideo: captureUiProofEnabled
+      recordVideo: support.captureUiProofEnabled
         ? { dir: suite.artifactDir, size: { height: 900, width: 1280 } }
         : undefined,
     });
     const page = await context.newPage();
     const proofVideo = page.video();
-    const gateway = await installMockGateway(page, {
-      methodResponses: {
-        "sessions.list": sessionsListResponse([
-          sessionRow(mainKey, "Main", 2),
-          sessionRow(queuedKey, "Queued repair", 1, {
-            hasActiveRun: true,
-            status,
-          }),
-        ]),
-      },
-      sessionKey: mainKey,
-    });
+    const workRow = (runStatus: string, extra: { unread?: boolean } = {}) =>
+      sessionRow(queuedKey, "Queued repair", 1, {
+        hasActiveRun: true,
+        status: runStatus,
+        ...extra,
+      });
+    const gateway = await ui.installSessionRows(
+      page,
+      [sessionRow(mainKey, "Main", 2), workRow(status)],
+      { sessionKey: mainKey },
+    );
 
     try {
-      await page.goto(controlUiSessionUrl(suite.server.baseUrl, mainKey));
+      await page.goto(support.controlUiSessionUrl(suite.server.baseUrl, mainKey));
       const row = page.locator(`[data-session-key="${queuedKey}"]`);
       await row.waitFor({ state: "visible", timeout: 10_000 });
-      expect(await row.getByText("Waiting for a concurrency slot", { exact: true }).count()).toBe(
-        0,
-      );
+      const waiting = row.getByText("Waiting for a concurrency slot", { exact: true });
+      expect(await waiting.count()).toBe(0);
       expect(await row.locator(".sidebar-recent-session__subtitle").count()).toBe(0);
       const ring = row.locator(".sidebar-session-indicator .session-glyph__ring");
-      expect(await ring.count()).toBe(1);
-      expect(await ring.getAttribute("aria-label")).toBe(label);
-      expect(
-        await row.getByRole("link", { name: `${label} Queued repair`, exact: true }).count(),
-      ).toBe(1);
-      expect(await ring.evaluate((element) => element.getAnimations()[0]?.playState)).toBe(
-        playState,
-      );
-      await captureUiProof(suite, page, `${status}-session-ring.png`);
+      async function expectRing(expectedLabel: string, expectedState: string) {
+        expect(await ring.count()).toBe(1);
+        expect(await ring.getAttribute("aria-label")).toBe(expectedLabel);
+        expect(await ring.evaluate((element) => element.getAnimations()[0]?.playState)).toBe(
+          expectedState,
+        );
+      }
+      await expectRing(label, playState);
+      const namedLink = (name: string) => row.getByRole("link", { name, exact: true });
+      expect(await namedLink(`${label} Queued repair`).count()).toBe(1);
+      await support.captureUiProof(suite, page, `${status}-session-ring.png`);
 
       const listRequests = (await gateway.getRequests("sessions.list")).length;
       await gateway.setSessionsListResponse(
-        sessionsListResponse([
+        support.sessionsListResponse([
           sessionRow(mainKey, "Main", 2),
-          sessionRow(queuedKey, "Queued repair", 1, {
-            hasActiveRun: true,
-            status: "running",
-            unread: true,
-          }),
+          workRow("running", { unread: true }),
         ]),
       );
       await gateway.emitGatewayEvent("sessions.changed", {
@@ -80,7 +69,7 @@ suite.define(() => {
         status: "running",
       });
       await expect
-        .poll(async () => (await gateway.getRequests("sessions.list")).length)
+        .poll(() => ui.requestCount(gateway, "sessions.list"))
         .toBeGreaterThan(listRequests);
       await expect
         .poll(() =>
@@ -104,16 +93,10 @@ suite.define(() => {
         `${linkNode?.name?.value} ${linkNode?.description?.value}`.match(/Unread/g),
       ).toHaveLength(1);
       await accessibility.detach();
-      expect(
-        await row.getByRole("link", { name: "Active run Queued repair", exact: true }).count(),
-      ).toBe(1);
+      expect(await namedLink("Active run Queued repair").count()).toBe(1);
       expect(await row.locator(".sidebar-recent-session__subtitle").count()).toBe(0);
-      expect(await ring.count()).toBe(1);
-      expect(await ring.getAttribute("aria-label")).toBe("Active run");
-      expect(await ring.evaluate((element) => element.getAnimations()[0]?.playState)).toBe(
-        "running",
-      );
-      await captureUiProof(suite, page, `${status}-session-running.png`);
+      await expectRing("Active run", "running");
+      await support.captureUiProof(suite, page, `${status}-session-running.png`);
     } finally {
       await context.close();
       if (proofVideo) {
