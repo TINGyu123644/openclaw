@@ -4,8 +4,6 @@ import { expect, it } from "vitest";
 import { runQaGatewayFixture } from "../../test/helpers/qa-gateway-cleanup.js";
 import { getPublishedPreparedModelCatalogOwnerSnapshot } from "../agents/prepared-model-catalog.js";
 import { getRuntimeConfig } from "../config/config.js";
-import type { ModelProviderConfig } from "../config/types.models.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { deleteTestEnvValue, setTestEnvValue } from "../test-utils/env.js";
 import {
   createGatewayConfigPath,
@@ -28,22 +26,13 @@ it.each(["native", "custom"] as const)(
         const token = randomUUID();
         setTestEnvValue("OPENCLAW_GATEWAY_TOKEN", token);
         const baseUrl = endpoint === "native" ? "https://api.x.ai/v1" : "https://custom.invalid/v1";
-        const personal: ModelProviderConfig = {
+        const personal = {
           api: "openai-responses",
           baseUrl,
           apiKey: "synthetic-personal-key",
-          models: [
-            {
-              id: "auto",
-              name: "Auto",
-              reasoning: false,
-              input: ["text"],
-              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-              maxTokens: 4096,
-            },
-          ],
+          models: [{ id: "auto", name: "Auto" }],
         };
-        const cfg: OpenClawConfig = {
+        const cfg = {
           agents: {
             defaults: {
               workspace: home.workspaceDir,

@@ -63,18 +63,15 @@ test.each(["archive", "incognito reset"] as const)(
     expect(manager.write("conn-1", oldSession.sessionId, "long-running-command\n")).toBe(true);
     let mutationSettled = false;
     const context = createDirectChatContext({ terminalSessions: manager });
-    const mutationPromise = withPluginRuntimeGatewayRequestScope(
-      { context, isWebchatConnect: () => false },
-      () =>
-        directSessionReq(
-          operation === "archive" ? "sessions.patch" : "sessions.reset",
-          {
-            key: sessionKey,
-            ...(operation === "archive" ? { archived: true } : {}),
-            expectedSessionId: oldOwner.agentSessionId,
-          },
-          { context },
-        ),
+    const scope = { context, isWebchatConnect: () => false };
+    const method = operation === "archive" ? "sessions.patch" : "sessions.reset";
+    const params = {
+      key: sessionKey,
+      ...(operation === "archive" ? { archived: true } : {}),
+      expectedSessionId: oldOwner.agentSessionId,
+    };
+    const mutationPromise = withPluginRuntimeGatewayRequestScope(scope, () =>
+      directSessionReq(method, params, { context }),
     ).finally(() => {
       mutationSettled = true;
     });

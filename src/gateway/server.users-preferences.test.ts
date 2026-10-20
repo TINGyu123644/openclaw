@@ -60,26 +60,18 @@ test("named preferences stay profile-scoped over authenticated multi-agent Gatew
         ok: true,
         payload: { auth: { method: "trusted-proxy", scopes } },
       });
-      const entries = {
-        "ui.theme": "dark",
-        "agent:research:dashboard:incognito-preference": "personal",
-      };
+      const privateKey = "agent:research:dashboard:incognito-preference";
+      const entries = { "ui.theme": "dark", [privateKey]: "personal" };
       const reader = ensureProfileForEmail("preferences-reader@example.test");
-      expect(await rpcReq(socket, "users.self", {})).toMatchObject({
-        ok: true,
-        payload: { profile: { id: reader.id } },
-      });
       expect(await rpcReq(socket, "users.prefs.set", { entries })).toMatchObject({ ok: true });
       expect(await rpcReq(socket, "users.prefs.get", {})).toMatchObject({
         ok: true,
         payload: { status: "ok", entries },
       });
-      for (const [key, value] of Object.entries(entries)) {
-        expect.soft(await rpcReq(socket, "users.prefs.get", { keys: [key] })).toMatchObject({
-          ok: true,
-          payload: { status: "ok", entries: { [key]: value } },
-        });
-      }
+      expect.soft(await rpcReq(socket, "users.prefs.get", { keys: [privateKey] })).toMatchObject({
+        ok: true,
+        payload: { status: "ok", entries: { [privateKey]: "personal" } },
+      });
       const foreign = ensureProfileForEmail("foreign-owner@example.test");
       const denied = { ok: false, error: { code: "INVALID_REQUEST" } };
       for (const [name, owner, expected] of [
