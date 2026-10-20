@@ -51,71 +51,50 @@ describe("session store availability", () => {
     });
   });
 
-  it("reads cross-agent rows from a migrated fixed store", async () => {
+  it.each([true, false])("reads fixed-store rows (explicit default owner: %s)", async (owner) => {
     await withTempHome(async (home) => {
-      const storePath = path.join(home, "shared.sqlite");
-      const cfg = fixedStoreConfig(storePath);
+      const storePath = path.join(home, owner ? "shared.sqlite" : "ownerless-shared.sqlite");
+      const cfg = fixedStoreConfig(storePath, owner);
       setRuntimeConfigSnapshot(cfg);
-      await write("main", "main", 1, storePath);
-      await write("ops", "main", 1, storePath);
+      const agentIds = owner ? ["main", "ops"] : ["ops"];
+      for (const agentId of agentIds) {
+        await write(agentId, "main", 1, storePath);
+      }
       const cache: SessionStoreTargetsReadCache = new Map();
-
-      expect(readTargets(cfg, "main", { cache })).toEqual({
-        available: true,
-        targets: [{ agentId: "main", storePath }],
-      });
-      expect(readTargets(cfg, "ops", { cache })).toEqual({
-        available: true,
-        targets: [{ agentId: "ops", storePath }],
-      });
+      for (const agentId of agentIds) {
+        expect(readTargets(cfg, agentId, { cache })).toEqual({
+          available: true,
+          targets: [{ agentId, storePath }],
+        });
+      }
       expect(cache.size).toBe(1);
     });
   });
 
-  it("does not let a missing configured store poison readable discovered siblings", async () => {
-    await withTempHome(async (home) => {
-      setRuntimeConfigSnapshot({});
-      // The configured candidate is absent during migration; its discovered sibling is live.
-      await replaceSessionEntry(
-        { agentId: "main", sessionKey: "agent:main:main" },
-        { sessionId: "live-session", updatedAt: 1 },
-      );
-      const cfg = missingStoreConfig(home);
-
-      setRuntimeConfigSnapshot(cfg);
-      const result = readTargets(cfg, "main");
-
-      // A false absence here would destroy live worker placements.
-      expect(result.available).toBe(true);
-      if (result.available) {
-        expect(result.targets.length).toBeGreaterThan(0);
-      }
-    });
-  });
-
-  it("reports database-missing only when no candidate store exists", async () => {
-    await withTempHome(async (home) => {
-      const cfg = missingStoreConfig(home);
-
-      setRuntimeConfigSnapshot(cfg);
-      expect(readTargets(cfg, "main")).toEqual({
-        available: false,
-        reason: "database-missing",
+  it.each([true, false])(
+    "resolves a missing configured store (discovered sibling: %s)",
+    async (discovered) => {
+      await withTempHome(async (home) => {
+        if (discovered) {
+          setRuntimeConfigSnapshot({});
+          await replaceSessionEntry(
+            { agentId: "main", sessionKey: "agent:main:main" },
+            { sessionId: "live-session", updatedAt: 1 },
+          );
+        }
+        const cfg = missingStoreConfig(home);
+        setRuntimeConfigSnapshot(cfg);
+        const result = readTargets(cfg, "main");
+        if (discovered) {
+          // A false absence here would destroy live worker placements.
+          expect(result.available).toBe(true);
+          if (result.available) {
+            expect(result.targets.length).toBeGreaterThan(0);
+          }
+        } else {
+          expect(result).toEqual({ available: false, reason: "database-missing" });
+        }
       });
-    });
-  });
-
-  it("reads ownerless fixed-store rows under the requested agent", async () => {
-    await withTempHome(async (home) => {
-      const storePath = path.join(home, "ownerless-shared.sqlite");
-      const cfg = fixedStoreConfig(storePath, false);
-      setRuntimeConfigSnapshot(cfg);
-      await write("ops", "main", 1, storePath);
-
-      expect(readTargets(cfg, "ops")).toEqual({
-        available: true,
-        targets: [{ agentId: "ops", storePath }],
-      });
-    });
-  });
+    },
+  );
 });

@@ -8,7 +8,6 @@ import {
 } from "./transcript-stream.js";
 
 // #54296: stream large transcripts rather than reading and splitting the entire file.
-
 let tempDir = "";
 let transcriptPath = "";
 

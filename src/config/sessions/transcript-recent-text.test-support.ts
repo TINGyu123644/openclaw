@@ -3,26 +3,22 @@ import { appendTranscriptEvent, persistSessionTranscriptTurn } from "./session-a
 import * as historyWorkerRuntime from "./session-history-worker-runtime.js";
 import { resolveSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
 import { waitForSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
-import type { useTempSessionsFixture } from "./test-helpers.js";
 import { transcriptMessage } from "./transcript-message.test-support.js";
-import { readRecentUserAssistantTextForSession } from "./transcript.js";
+import { readRecentUserAssistantTextForSession as readRecent } from "./transcript.js";
 
 export function registerRecentTranscriptTextSnapshotTests(params: {
-  fixture: Pick<ReturnType<typeof useTempSessionsFixture>, "storePath">;
+  fixture: { storePath(): string };
   sessionId: string;
   sessionKey: string;
   createFixtureTranscriptScope: () => Parameters<typeof persistSessionTranscriptTurn>[0];
   writeTranscriptStore: () => Promise<void>;
 }) {
-  const { fixture, sessionId, sessionKey, createFixtureTranscriptScope, writeTranscriptStore } =
-    params;
-  const scope = () => ({ agentId: "main", sessionKey, storePath: fixture.storePath() });
-  const read = (
-    options: Partial<Parameters<typeof readRecentUserAssistantTextForSession>[0]> = {},
-  ) => readRecentUserAssistantTextForSession({ ...scope(), ...options });
+  const { fixture, createFixtureTranscriptScope: scope, writeTranscriptStore } = params;
+  const read = (options: Partial<Parameters<typeof readRecent>[0]> = {}) =>
+    readRecent({ ...scope(), ...options });
   it("reads recent context only from the active transcript branch", async () => {
     await writeTranscriptStore();
-    const target = { ...scope(), sessionId };
+    const target = scope();
     await persistSessionTranscriptTurn(target, {
       updateMode: "none",
       messages: (
@@ -64,7 +60,7 @@ export function registerRecentTranscriptTextSnapshotTests(params: {
 
   it("keeps recent user context on one snapshot while a reply is appended", async () => {
     await writeTranscriptStore();
-    const transcriptScope = createFixtureTranscriptScope();
+    const transcriptScope = scope();
     await persistSessionTranscriptTurn(transcriptScope, {
       updateMode: "none",
       messages: Array.from({ length: 300 }, (_, index) =>
