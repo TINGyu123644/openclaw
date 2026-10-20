@@ -1,7 +1,23 @@
-// Feishu tests cover sequential queue plugin behavior.
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSequentialQueue } from "./sequential-queue.js";
+
+function gatedTask(
+  enqueue: ReturnType<typeof createSequentialQueue>,
+  key: string,
+  label: string,
+  order: string[],
+) {
+  const gate = createDeferred<void>();
+  const started = createDeferred<void>();
+  const done = enqueue(key, async () => {
+    order.push(`${label}:start`);
+    started.resolve();
+    await gate.promise;
+    order.push(`${label}:end`);
+  });
+  return { release: () => gate.resolve(), started: started.promise, done };
+}
 
 describe("createSequentialQueue", () => {
   afterEach(() => {
@@ -10,57 +26,33 @@ describe("createSequentialQueue", () => {
 
   it("serializes tasks for the same key", async () => {
     const enqueue = createSequentialQueue();
-    const gate = createDeferred<void>();
-    const started = createDeferred<void>();
     const order: string[] = [];
-
-    const first = enqueue("feishu:default:chat-1", async () => {
-      order.push("first:start");
-      started.resolve();
-      await gate.promise;
-      order.push("first:end");
-    });
+    const first = gatedTask(enqueue, "feishu:default:chat-1", "first", order);
     const second = enqueue("feishu:default:chat-1", async () => {
       order.push("second:start");
       order.push("second:end");
     });
 
-    await started.promise;
+    await first.started;
     expect(order).toEqual(["first:start"]);
 
-    gate.resolve();
-    await Promise.all([first, second]);
+    first.release();
+    await Promise.all([first.done, second]);
 
     expect(order).toEqual(["first:start", "first:end", "second:start", "second:end"]);
   });
 
   it("allows different keys to run concurrently", async () => {
     const enqueue = createSequentialQueue();
-    const gateA = createDeferred<void>();
-    const gateB = createDeferred<void>();
-    const startedA = createDeferred<void>();
-    const startedB = createDeferred<void>();
     const order: string[] = [];
-
-    const first = enqueue("feishu:default:chat-1", async () => {
-      order.push("chat-1:start");
-      startedA.resolve();
-      await gateA.promise;
-      order.push("chat-1:end");
-    });
-    const second = enqueue("feishu:default:chat-1:btw:om_2", async () => {
-      order.push("btw:start");
-      startedB.resolve();
-      await gateB.promise;
-      order.push("btw:end");
-    });
-
-    await Promise.all([startedA.promise, startedB.promise]);
+    const first = gatedTask(enqueue, "feishu:default:chat-1", "chat-1", order);
+    const second = gatedTask(enqueue, "feishu:default:chat-1:btw:om_2", "btw", order);
+    await Promise.all([first.started, second.started]);
     expect(order).toEqual(["chat-1:start", "btw:start"]);
 
-    gateA.resolve();
-    gateB.resolve();
-    await Promise.all([first, second]);
+    first.release();
+    second.release();
+    await Promise.all([first.done, second.done]);
 
     expect(order).toContain("chat-1:end");
     expect(order).toContain("btw:end");
@@ -102,15 +94,8 @@ describe("createSequentialQueue", () => {
     });
     const order: string[] = [];
 
-    // Stuck task — never resolves until the test cleans up.
-    const stuckGate = createDeferred<void>();
-    const stuck = enqueue("feishu:default:chat-stuck", async () => {
-      order.push("stuck:start");
-      await stuckGate.promise;
-      order.push("stuck:end");
-    });
+    const stuck = gatedTask(enqueue, "feishu:default:chat-stuck", "stuck", order);
 
-    // Second same-key task — would be starved indefinitely without the cap.
     const followUp = enqueue("feishu:default:chat-stuck", async () => {
       order.push("follow-up:ran");
     });
@@ -124,8 +109,7 @@ describe("createSequentialQueue", () => {
     expect(order).toEqual(["stuck:start", "follow-up:ran"]);
     expect(timeouts).toEqual([{ key: "feishu:default:chat-stuck", timeoutMs: 300_000 }]);
 
-    // Drain the leaked stuck task so it doesn't trip the unhandled-rejection guard.
-    stuckGate.resolve();
-    await stuck;
+    stuck.release();
+    await stuck.done;
   });
 });

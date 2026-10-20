@@ -1,4 +1,3 @@
-// Feishu test support covers monitor.message handler plugin behavior.
 import { createTestInboundDebounceFlush } from "openclaw/plugin-sdk/channel-test-helpers";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,18 +11,11 @@ type InboundDebounceFlush = ReturnType<
   Parameters<PluginRuntime["channel"]["debounce"]["createInboundDebouncer"]>[0]["onFlush"]
 >;
 
-function createTextEvent(params: {
-  messageId: string;
-  senderOpenId: string;
-  senderType: "bot" | "user";
-}): FeishuMessageEvent {
+function createTextEvent(senderOpenId: string): FeishuMessageEvent {
   return {
-    sender: {
-      sender_id: { open_id: params.senderOpenId },
-      sender_type: params.senderType,
-    },
+    sender: { sender_id: { open_id: senderOpenId }, sender_type: "bot" },
     message: {
-      message_id: params.messageId,
+      message_id: "om_reused",
       chat_id: "oc_chat_1",
       chat_type: "p2p",
       message_type: "text",
@@ -43,9 +35,7 @@ function createHandler() {
     await onFlush?.([event], createTestInboundDebounceFlush).completion;
   });
   const channelRuntime = {
-    commands: {
-      isControlCommandMessage: () => false,
-    },
+    commands: { isControlCommandMessage: () => false },
     debounce: {
       resolveInboundDebounceMs: () => 0,
       createInboundDebouncer: vi.fn((params: { onFlush: typeof onFlush }) => {
@@ -83,20 +73,8 @@ describe("createFeishuMessageReceiveHandler self-message filtering", () => {
   it("drops the current bot before debounce and processing claims", async () => {
     const { handler, handleMessage, enqueue } = createHandler();
 
-    await handler(
-      createTextEvent({
-        messageId: "om_reused",
-        senderOpenId: "ou_bot",
-        senderType: "bot",
-      }),
-    );
-    await handler(
-      createTextEvent({
-        messageId: "om_reused",
-        senderOpenId: "ou_other_bot",
-        senderType: "bot",
-      }),
-    );
+    await handler(createTextEvent("ou_bot"));
+    await handler(createTextEvent("ou_other_bot"));
 
     expect(enqueue).toHaveBeenCalledTimes(1);
     expect(handleMessage).toHaveBeenCalledTimes(1);

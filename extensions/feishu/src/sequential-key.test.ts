@@ -1,4 +1,3 @@
-// Feishu tests cover sequential key plugin behavior.
 import { describe, expect, it } from "vitest";
 import type { FeishuMessageEvent } from "./bot.js";
 import { getFeishuSequentialKey } from "./sequential-key.js";
@@ -9,13 +8,7 @@ function createTextEvent(params: {
   chatId?: string;
 }): FeishuMessageEvent {
   return {
-    sender: {
-      sender_id: {
-        open_id: "ou_sender_1",
-        user_id: "ou_user_1",
-      },
-      sender_type: "user",
-    },
+    sender: { sender_id: { open_id: "ou_sender_1", user_id: "ou_user_1" }, sender_type: "user" },
     message: {
       message_id: params.messageId ?? "om_message_1",
       chat_id: params.chatId ?? "oc_dm_chat",
@@ -26,27 +19,27 @@ function createTextEvent(params: {
   } as FeishuMessageEvent;
 }
 
+function key(
+  event: FeishuMessageEvent,
+  options: { botOpenId?: string; preparedContent?: string } = {},
+) {
+  return getFeishuSequentialKey({ accountId: "default", event, ...options });
+}
+
 describe("getFeishuSequentialKey", () => {
   it.each([
     [createTextEvent({ text: "hello" }), "feishu:default:oc_dm_chat"],
     [createTextEvent({ text: "/status" }), "feishu:default:oc_dm_chat"],
     [createTextEvent({ text: "/stop" }), "feishu:default:oc_dm_chat:control"],
   ])("resolves sequential key %#", (event, expected) => {
-    expect(
-      getFeishuSequentialKey({
-        accountId: "default",
-        event,
-      }),
-    ).toBe(expected);
+    expect(key(event)).toBe(expected);
   });
 
   it("classifies the prepared batch body instead of only its last event", () => {
     const event = createTextEvent({ text: "@_bot/stop" });
     event.message.mentions = [{ key: "@_bot", name: "Bot", id: { open_id: "ou_bot" } }];
     expect(
-      getFeishuSequentialKey({
-        accountId: "default",
-        event,
+      key(event, {
         botOpenId: "ou_bot",
         preparedContent: "first message\n@_bot/stop",
       }),
@@ -57,50 +50,23 @@ describe("getFeishuSequentialKey", () => {
     const first = createTextEvent({ text: "/btw one", messageId: "om_message_1" });
     const second = createTextEvent({ text: "/btw two", messageId: "om_message_2" });
 
-    expect(
-      getFeishuSequentialKey({
-        accountId: "default",
-        event: first,
-      }),
-    ).toBe("feishu:default:oc_dm_chat:btw");
-    expect(
-      getFeishuSequentialKey({
-        accountId: "default",
-        event: second,
-      }),
-    ).toBe("feishu:default:oc_dm_chat:btw");
+    expect(key(first)).toBe("feishu:default:oc_dm_chat:btw");
+    expect(key(second)).toBe("feishu:default:oc_dm_chat:btw");
   });
 
   it("falls back to a stable btw lane when the message id is unavailable", () => {
     const event = createTextEvent({ text: "/btw what changed?" });
     delete (event.message as { message_id?: string }).message_id;
 
-    expect(
-      getFeishuSequentialKey({
-        accountId: "default",
-        event,
-      }),
-    ).toBe("feishu:default:oc_dm_chat:btw");
+    expect(key(event)).toBe("feishu:default:oc_dm_chat:btw");
   });
 
   it("keeps an empty group message with bot mentions on its normal chat lane", () => {
     const event = createTextEvent({ text: "" });
     event.message.chat_type = "group";
     event.message.content = "";
-    event.message.mentions = [
-      {
-        key: "@_bot_1",
-        id: { open_id: "ou_bot_1" },
-        name: "OpenClaw",
-      },
-    ];
+    event.message.mentions = [{ key: "@_bot_1", id: { open_id: "ou_bot_1" }, name: "OpenClaw" }];
 
-    expect(
-      getFeishuSequentialKey({
-        accountId: "default",
-        event,
-        botOpenId: "ou_bot_1",
-      }),
-    ).toBe("feishu:default:oc_dm_chat");
+    expect(key(event, { botOpenId: "ou_bot_1" })).toBe("feishu:default:oc_dm_chat");
   });
 });
