@@ -5,19 +5,10 @@ import {
   BROWSER_NATIVE_HOST_DESCRIPTION,
   BROWSER_NATIVE_HOST_NAME,
 } from "./extension-native-host.constants.js";
-import {
-  WINDOWS_NATIVE_EXE,
-  WINDOWS_BINDING,
-  WINDOWS_RECEIPT,
-  WINDOWS_MANIFEST,
-  WINDOWS_OFFICIAL_ORIGIN,
-  type NativeWindowsContext,
-  type WindowsManagementRequest,
-  type WindowsManagementResponse,
-} from "./extension-windows-contract.js";
+import * as win from "./extension-windows-contract.js";
 import type { windowsNativePlatform } from "./extension-windows-platform.js";
 export function windowsFixture() {
-  const context: NativeWindowsContext = {
+  const context: win.NativeWindowsContext = {
     nodePath: "C:\\Program Files\\nodejs\\node.exe",
     cliPath: "C:\\OpenClaw\\openclaw.mjs",
     stateDir: "C:\\Users\\Fixture\\.openclaw",
@@ -38,18 +29,18 @@ export function windowsFixture() {
   );
   const installation = {
     generation,
-    manifestPath: path.win32.join(dir, WINDOWS_MANIFEST),
-    launcherPath: path.win32.join(dir, WINDOWS_NATIVE_EXE),
-    bindingPath: path.win32.join(dir, WINDOWS_BINDING),
-    receiptPath: path.win32.join(dir, WINDOWS_RECEIPT),
+    manifestPath: path.win32.join(dir, win.WINDOWS_MANIFEST),
+    launcherPath: path.win32.join(dir, win.WINDOWS_NATIVE_EXE),
+    bindingPath: path.win32.join(dir, win.WINDOWS_BINDING),
+    receiptPath: path.win32.join(dir, win.WINDOWS_RECEIPT),
   };
-  const executable = "C:\\OpenClaw\\" + WINDOWS_NATIVE_EXE;
+  const executable = "C:\\OpenClaw\\" + win.WINDOWS_NATIVE_EXE;
   const files = new Map<string, Buffer>();
   const hash = (bytes: Buffer) => crypto.createHash("sha256").update(bytes).digest("hex");
   const json = (value: unknown) => Buffer.from(JSON.stringify(value));
   function prepare(
     selected = context,
-    expectedOrigins = [WINDOWS_OFFICIAL_ORIGIN],
+    expectedOrigins = [win.WINDOWS_OFFICIAL_ORIGIN],
     companion = false,
   ) {
     const image = Buffer.from("MZ synthetic owned image; not Windows execution proof");
@@ -100,22 +91,22 @@ export function windowsFixture() {
       return bytes;
     }),
     listFiles: vi.fn(async () => [
-      WINDOWS_NATIVE_EXE,
-      WINDOWS_BINDING,
-      WINDOWS_RECEIPT,
-      WINDOWS_MANIFEST,
+      win.WINDOWS_NATIVE_EXE,
+      win.WINDOWS_BINDING,
+      win.WINDOWS_RECEIPT,
+      win.WINDOWS_MANIFEST,
     ]),
     realpath: vi.fn(async (p) => p),
   } satisfies typeof windowsNativePlatform;
-  const request: WindowsManagementRequest = {
+  const request: win.WindowsManagementRequest = {
     v: 1,
     action: "inspect",
     mode: "native-windows-cli",
     context,
-    expectedOrigins: [WINDOWS_OFFICIAL_ORIGIN],
+    expectedOrigins: [win.WINDOWS_OFFICIAL_ORIGIN],
     store: "preserve",
   };
-  const response: WindowsManagementResponse = {
+  const response: win.WindowsManagementResponse = {
     v: 1,
     ok: true,
     code: "ok",
