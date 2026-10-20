@@ -1,4 +1,5 @@
 import { fork } from "node:child_process";
+import { once } from "node:events";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
@@ -73,18 +74,18 @@ function spawnRouteOwnerFixture(waitForReady: boolean, abortSignal: AbortSignal)
   return { messages, ready, worker };
 }
 
+function runClaim(script: string) {
+  const messages: TailscaleRouteOwnerMessage[] = [];
+  const owner = runTailscaleRouteOwner({ argv: [process.execPath, "-e", script] }, (message) =>
+    messages.push(message),
+  );
+  return { messages, owner };
+}
+
 describe("Tailscale route owner", () => {
   it("reports readiness and terminates the foreground claim when its owner stops", async () => {
-    const messages: TailscaleRouteOwnerMessage[] = [];
-    const owner = runTailscaleRouteOwner(
-      {
-        argv: [
-          process.execPath,
-          "-e",
-          'process.stdout.write("Press Ctrl+C to exit.\\n"); setInterval(() => {}, 1000)',
-        ],
-      },
-      (message) => messages.push(message),
+    const { messages, owner } = runClaim(
+      'process.stdout.write("Press Ctrl+C to exit.\\n"); setInterval(() => {}, 1000)',
     );
 
     await vi.waitFor(() => {
@@ -97,12 +98,8 @@ describe("Tailscale route owner", () => {
   });
 
   it("reports command output when the claim exits before readiness", async () => {
-    const messages: TailscaleRouteOwnerMessage[] = [];
-    const owner = runTailscaleRouteOwner(
-      {
-        argv: [process.execPath, "-e", 'process.stderr.write("route denied\\n"); process.exit(7)'],
-      },
-      (message) => messages.push(message),
+    const { messages, owner } = runClaim(
+      'process.stderr.write("route denied\\n"); process.exit(7)',
     );
 
     await expect(owner.exited).resolves.toMatchObject({ code: 7, stopping: false });
@@ -119,14 +116,10 @@ describe("Tailscale route owner", () => {
         if (waitForReady) {
           await ready;
         }
-        const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-          (resolve) => {
-            worker.once("exit", (code, signal) => resolve({ code, signal }));
-          },
-        );
+        const exit = once(worker, "exit");
         worker.disconnect();
 
-        await expect(exit).resolves.toEqual({ code: 0, signal: null });
+        await expect(exit).resolves.toEqual([0, null]);
       } finally {
         if (worker.exitCode === null && worker.signalCode === null) {
           worker.kill("SIGKILL");
@@ -147,14 +140,10 @@ describe("Tailscale route owner", () => {
           throw new Error("route owner did not report its claim process");
         }
         routePid = spawned.pid;
-        const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-          (resolve) => {
-            worker.once("exit", (code, signal) => resolve({ code, signal }));
-          },
-        );
+        const exit = once(worker, "exit");
         worker.kill("SIGINT");
 
-        await expect(exit).resolves.toEqual({ code: 0, signal: null });
+        await expect(exit).resolves.toEqual([0, null]);
         await vi.waitFor(() => {
           expect(() => process.kill(spawned.pid, 0)).toThrow();
         });

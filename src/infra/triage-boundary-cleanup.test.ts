@@ -107,13 +107,11 @@ it.each<CleanupCase>([
     } else {
       const failure = await cleanup.catch((error: unknown) => error);
       expect(failure).toBeInstanceOf(AggregateError);
-      expect((failure as AggregateError).errors).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            cause: signalError,
-            message: expect.stringContaining("41001 (receipt helper)"),
-          }),
-        ]),
+      expect((failure as AggregateError).errors).toContainEqual(
+        expect.objectContaining({
+          cause: signalError,
+          message: expect.stringContaining("41001 (receipt helper)"),
+        }),
       );
       expect(mocks.deleteClaim).not.toHaveBeenCalled();
       expect(mocks.rm).not.toHaveBeenCalled();

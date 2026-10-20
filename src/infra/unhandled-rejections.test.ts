@@ -7,12 +7,13 @@ import {
 } from "./unhandled-rejections.js";
 
 const codedError = (code: string, message = code) => Object.assign(new Error(message), { code });
+const causedBy = (cause: unknown, message = "model call failed") => new Error(message, { cause });
 
 describe("network rejection regressions", () => {
   it("recognizes destroyed HTTP/2 sessions, including wrapped failures", () => {
     const error = codedError("ERR_HTTP2_INVALID_SESSION", "The session has been destroyed");
     expect(isTransientNetworkError(error)).toBe(true);
-    expect(isTransientNetworkError(new Error("model call failed", { cause: error }))).toBe(true);
+    expect(isTransientNetworkError(causedBy(error))).toBe(true);
     expect(isTransientNetworkError(new Error("ERR_HTTP2_INVALID_SESSION"))).toBe(true);
   });
 
@@ -38,7 +39,7 @@ describe("network rejection regressions", () => {
       "ERR_WEBSOCKET_NON_RETRYABLE_CLOSE",
       "WebSocket closed 1008 policy violation: ECONNRESET",
     );
-    expect(isTransientNetworkError(new Error("socket hang up", { cause }))).toBe(false);
+    expect(isTransientNetworkError(causedBy(cause, "socket hang up"))).toBe(false);
   });
 });
 
@@ -83,33 +84,26 @@ describe("watcher rejection classification", () => {
 });
 
 it("restricts benign uncaught exceptions to known transport failures", () => {
-  expect(isBenignUncaughtExceptionError(codedError("EPIPE"))).toBe(true);
-  expect(isBenignUncaughtExceptionError(codedError("ENETDOWN"))).toBe(true);
-  expect(isBenignUncaughtExceptionError(new Error("connect ENETDOWN 192.0.2.1:443"))).toBe(true);
-  expect(
-    isBenignUncaughtExceptionError(
-      new Error("model call failed", { cause: codedError("ERR_HTTP2_INVALID_SESSION") }),
+  const check = (error: Error, benign: boolean) =>
+    expect(isBenignUncaughtExceptionError(error)).toBe(benign);
+  check(codedError("EPIPE"), true);
+  check(codedError("ENETDOWN"), true);
+  check(new Error("connect ENETDOWN 192.0.2.1:443"), true);
+  check(causedBy(codedError("ERR_HTTP2_INVALID_SESSION")), true);
+  check(
+    causedBy(
+      new Error("WebSocket was closed before the connection was established"),
+      "reconnect failed",
     ),
-  ).toBe(true);
-  expect(
-    isBenignUncaughtExceptionError(
-      new Error("reconnect failed", {
-        cause: new Error("WebSocket was closed before the connection was established"),
-      }),
-    ),
-  ).toBe(true);
-  expect(
-    isBenignUncaughtExceptionError(
-      new Error("fetch failed", { cause: new TypeError("terminated") }),
-    ),
-  ).toBe(true);
-  expect(isBenignUncaughtExceptionError(codedError("SQLITE_BUSY"))).toBe(false);
-  expect(isBenignUncaughtExceptionError(codedError("ECONNRESET"))).toBe(false);
-  expect(isBenignUncaughtExceptionError(new Error("terminated"))).toBe(false);
-  expect(isBenignUncaughtExceptionError(new TypeError("terminated unexpectedly"))).toBe(false);
-  expect(
-    isBenignUncaughtExceptionError(
-      new Error("WebSocket error: WebSocket was closed before the connection was established"),
-    ),
-  ).toBe(false);
+    true,
+  );
+  check(causedBy(new TypeError("terminated"), "fetch failed"), true);
+  check(codedError("SQLITE_BUSY"), false);
+  check(codedError("ECONNRESET"), false);
+  check(new Error("terminated"), false);
+  check(new TypeError("terminated unexpectedly"), false);
+  check(
+    new Error("WebSocket error: WebSocket was closed before the connection was established"),
+    false,
+  );
 });

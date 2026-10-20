@@ -42,9 +42,7 @@ describe("running systemd unit stop timeout", () => {
           ? "/user.slice/user-1000.slice/user@1000.service/app.slice/custom-gateway.service"
           : "/system.slice/custom-gateway.service";
       readFile.mockResolvedValue(
-        ["2:cpu,cpuacct:/user.slice/user-1000.slice/user@1000.service", `${hierarchy}${path}`].join(
-          "\n",
-        ),
+        `2:cpu,cpuacct:/user.slice/user-1000.slice/user@1000.service\n${hierarchy}${path}`,
       );
       execUser.mockResolvedValue(loaded(timeout));
       expect(await readSystemdStopTimeout({ INVOCATION_ID: "own" })).toEqual({
@@ -59,11 +57,9 @@ describe("running systemd unit stop timeout", () => {
 
   it("rejects a same-named unit in the wrong manager", async () => {
     execUser.mockResolvedValue(loaded("10min", "other"));
-    const result = await readSystemdStopTimeout({
-      OPENCLAW_SYSTEMD_UNIT: "custom",
-      INVOCATION_ID: "own",
-    });
-    expect(result).toEqual({
+    expect(
+      await readSystemdStopTimeout({ OPENCLAW_SYSTEMD_UNIT: "custom", INVOCATION_ID: "own" }),
+    ).toEqual({
       timeoutMs: 90_000,
       source: "systemd system custom.service TimeoutStopUSec",
     });
