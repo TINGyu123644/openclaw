@@ -63,13 +63,9 @@ function showCapability(preview: PreviewState["preview"], host: HTMLElement, cap
 }
 
 function boardProvider(overrides: Partial<BoardProvider> = {}) {
+  const pinnedWidgets: { name: string }[] = [];
   const snapshot = {
-    value: {
-      sessionKey: "agent:main:main",
-      revision: 0,
-      tabs: [],
-      widgets: [],
-    } as BoardProvider["snapshot$"]["value"],
+    value: { widgets: pinnedWidgets },
     subscribe: () => () => {},
   };
   const provider = {
@@ -80,19 +76,6 @@ function boardProvider(overrides: Partial<BoardProvider> = {}) {
     ...overrides,
   } as unknown as BoardProvider;
   return { provider, snapshot };
-}
-
-function boardWidget(name: string): BoardProvider["snapshot$"]["value"]["widgets"][number] {
-  return {
-    name,
-    tabId: "main",
-    contentKind: "html",
-    sizeW: 6,
-    sizeH: 4,
-    position: 0,
-    grantState: "none",
-    revision: 1,
-  };
 }
 
 function unmountWidget(host: HTMLElement) {
@@ -115,13 +98,7 @@ function mountWidget(
       () => {
         const [current, setCurrent] = createSignal(state);
         update = setCurrent;
-        return (
-          <ToolPreview
-            preview={current().preview}
-            surface="chat_message"
-            options={current().options}
-          />
-        );
+        return <ToolPreview {...current()} surface="chat_message" />;
       },
       { container: host },
     );
@@ -261,49 +238,44 @@ describe("widget-card", () => {
     );
   });
 
-  it("keeps initialized frames stable through capability and transport generations", () => {
-    const firstPreview = documentPreview("cv_surface_lease_one");
+  it.each([true, false])("rotates capabilities with an initialized=%s frame", (initialized) => {
+    const preview = documentPreview("cv_surface_lease_one");
     const host = connectedHost();
-    showCapability(firstPreview, host, "one");
-    const originalFrame = host.querySelector<HTMLIFrameElement>("iframe");
-    const originalSrc = originalFrame?.getAttribute("src");
+    showCapability(preview, host, "one");
+    const original = host.querySelector("iframe")!;
+    const originalSrc = original.getAttribute("src");
     expect(originalSrc).toContain("/__openclaw__/cap/one/");
-    initializeWidgetFrame(originalFrame!);
-
-    showCapability(firstPreview, host, "two");
-    expect(host.querySelector("iframe")).toBe(originalFrame);
-    expect(host.querySelector("iframe")?.getAttribute("src")).toBe(originalSrc);
+    if (initialized) {
+      initializeWidgetFrame(original);
+    } else {
+      // HTTP error documents dispatch load without offering a widget bridge.
+      original.dispatchEvent(new Event("load"));
+    }
+    showCapability(preview, host, "two");
+    const current = host.querySelector("iframe")!;
+    expect(current === original).toBe(initialized);
+    if (initialized) {
+      expect(current.getAttribute("src")).toBe(originalSrc);
+    } else {
+      expect(current.getAttribute("src")).toContain("/__openclaw__/cap/two/");
+      initializeWidgetFrame(current);
+    }
+    showCapability(preview, host, "three");
+    expect(host.querySelector("iframe")).toBe(current);
+    expect(current.getAttribute("src")).toContain(
+      `/__openclaw__/cap/${initialized ? "one" : "two"}/`,
+    );
 
     unmountWidget(host);
-    showCapability(firstPreview, host, "two");
+    showCapability(preview, host, "two");
     const remountedFrame = host.querySelector("iframe");
-    expect(remountedFrame).not.toBe(originalFrame);
+    expect(remountedFrame).not.toBe(current);
     expect(remountedFrame?.getAttribute("src")).toContain("/__openclaw__/cap/two/");
     initializeWidgetFrame(remountedFrame!);
 
     bumpCanvasWidgetFrameConnectionGeneration();
-    showCapability(firstPreview, host, "three");
+    showCapability(preview, host, "three");
     expect(host.querySelector("iframe")).toBe(remountedFrame);
-  });
-
-  it("replaces an uninitialized failed frame when its capability rotates", () => {
-    const preview = documentPreview("cv_initial_rotation");
-    const host = connectedHost();
-    const show = (capability: string) => showCapability(preview, host, capability);
-
-    show("hello");
-    const original = host.querySelector("iframe")!;
-    // HTTP error documents also dispatch load, but offer no widget bridge.
-    original.dispatchEvent(new Event("load"));
-    show("renewed");
-    const renewed = host.querySelector("iframe")!;
-    expect(renewed).not.toBe(original);
-    expect(renewed.getAttribute("src")).toContain("/__openclaw__/cap/renewed/");
-
-    initializeWidgetFrame(renewed);
-    show("next");
-    expect(host.querySelector("iframe")).toBe(renewed);
-    expect(renewed.getAttribute("src")).toContain("/__openclaw__/cap/renewed/");
   });
 
   it("keeps a short reported frame height across a capability rotation", () => {
@@ -320,18 +292,14 @@ describe("widget-card", () => {
     );
     expect(frame?.style.height).toBe("48px");
 
-    // Re-render at the same URL so the style binding itself carries the
-    // remembered height; only then can a later rotation clear it.
+    // Commit the reported height to the binding before rotating the capability.
     showCapability(preview, host, "one");
     expect(frame?.getAttribute("style")).toContain("48px");
 
-    // The in-frame reporter only posts when its own height changes, so a
-    // rotation that lost the remembered height would strand the frame at its
-    // default until the widget content happened to resize.
+    // Unchanged content will not report again after rotation.
     showCapability(preview, host, "two");
     expect(host.querySelector("iframe")).toBe(frame);
     expect(frame?.getAttribute("style")).toContain("48px");
-    host.remove();
   });
 
   it("unloads an external frame when external embeds become disallowed", () => {
@@ -400,14 +368,13 @@ describe("widget-card", () => {
   it("pins default-script Canvas HTML through the board provider", async () => {
     const pinWidget = vi.fn(async () => undefined);
     const { provider, snapshot } = boardProvider({ pinWidget });
-    const mount = (preview: PreviewState["preview"], options: PreviewState["options"] = {}) =>
-      mountWidget(preview, { boardProvider: provider, ...options });
-    const canvas = mount(
+    const canvas = mountWidget(
       documentPreview("cv_release", {
         title: "Release status",
         viewId: " cv_release ",
         sandbox: undefined,
       }),
+      { boardProvider: provider },
     );
     expect(canvas.querySelector("openclaw-canvas-widget-view")).not.toBeNull();
     pinButton(canvas)?.click();
@@ -419,43 +386,33 @@ describe("widget-card", () => {
       });
     });
 
-    snapshot.value = {
-      ...snapshot.value,
-      revision: 1,
-      widgets: [boardWidget("release-status")],
-    };
-    const pinned = mount(
+    snapshot.value = { widgets: [{ name: "release-status" }] };
+    const pinned = mountWidget(
       documentPreview("cv_release", { viewId: "cv_release", boardWidgetName: "release-status" }),
+      { boardProvider: provider },
     );
-    expect(pinButton(pinned)?.disabled).toBe(true);
-    expect(pinButton(pinned)?.getAttribute("aria-label")).toBe("Pinned");
+    expect(pinButton(pinned)).toMatchObject({ disabled: true, ariaLabel: "Pinned" });
+  });
 
-    const external = mount(
-      {
-        ...canvasPreview,
+  it.each([
+    [
+      "external",
+      documentPreview("cv_external", {
         viewId: "cv_external",
         url: "https://example.com/widget.html",
-        sandbox: "scripts",
-      },
-      { allowExternalEmbedUrls: true },
-    );
-    expect(pinButton(external)).toBeNull();
-
-    const mismatched = mount(documentPreview("cv_other", { viewId: "cv_expected" }));
-    expect(pinButton(mismatched)).toBeNull();
-
-    const strict = mount(documentPreview("cv_strict", { viewId: "cv_strict", sandbox: "strict" }));
-    expect(pinButton(strict)).toBeNull();
-
-    const app = mount(
-      {
-        ...canvasPreview,
-        viewId: "cv_app",
-        mcpApp: { viewId: "cv_app" },
-      },
-      { sessionKey },
-    );
-    expect(pinButton(app)).toBeNull();
+      }),
+    ],
+    ["mismatched", documentPreview("cv_other", { viewId: "cv_expected" })],
+    ["strict", documentPreview("cv_strict", { viewId: "cv_strict", sandbox: "strict" })],
+    ["MCP App", { ...canvasPreview, viewId: "cv_app", mcpApp: { viewId: "cv_app" } }],
+  ] as const)("does not offer Canvas pinning for %s content", (_label, preview) => {
+    const { provider } = boardProvider();
+    const host = mountWidget(preview, {
+      boardProvider: provider,
+      sessionKey,
+      allowExternalEmbedUrls: true,
+    });
+    expect(pinButton(host)).toBeNull();
   });
 
   it("pins an MCP App using only its view identity", async () => {
@@ -467,10 +424,6 @@ describe("widget-card", () => {
       mcpApp: {
         viewId: " mcp-app-source ",
         serverName: "weather",
-        toolName: "show",
-        uiResourceUri: "ui://weather/app",
-        toolCallId: "call-1",
-        originSessionKey: "agent:main:main",
       },
     };
 
@@ -497,9 +450,6 @@ describe("widget-card", () => {
     );
     expect(pinButton(missingView)).toBeNull();
   });
-});
-
-describe("widget-card presentation", () => {
   it("releases placement observation while a retained widget is hidden", () => {
     const observers: ResizeObserverStub[] = [];
     class ResizeObserverStub implements ResizeObserver {
@@ -586,11 +536,7 @@ describe("widget-card presentation", () => {
     ["trusted", "strict", false],
   ] as const)("applies %s policy to preview sandbox %s", (embedSandboxMode, sandbox, scripted) => {
     const { provider, snapshot } = boardProvider();
-    snapshot.value = {
-      ...snapshot.value,
-      revision: 1,
-      widgets: [boardWidget("canvas-cv_clock")],
-    };
+    snapshot.value = { widgets: [{ name: "canvas-cv_clock" }] };
     const host = mountWidget(
       { ...preview, sandbox },
       { embedSandboxMode, boardProvider: provider },
