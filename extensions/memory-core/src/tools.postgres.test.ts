@@ -1,22 +1,17 @@
+import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { getEnvironmentData } from "node:worker_threads";
 import type { EmbeddingInput } from "openclaw/plugin-sdk/embedding-providers";
 import type { MemorySearchManager } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
-import {
-  resolveDatabaseFamilyEngines,
-  withDatabaseEngineSelection,
-} from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { setRuntimeConfigSnapshot } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { appendSessionTranscriptMessageByIdentity } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { createOpenClawTestState } from "openclaw/plugin-sdk/test-state";
-import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { closeAllMemorySearchManagers, getMemorySearchManager } from "./memory/index.js";
+import { postgresProductScope } from "./postgres-product.test-support.js";
 import {
   configureMemoryCoreDreamingStateForTests,
   resetMemoryCoreDreamingStateForTests,
@@ -64,20 +59,20 @@ vi.mock("./memory/embeddings.js", async (original) => ({
   },
 }));
 
-const configured: unknown = getEnvironmentData("openclaw.test.workboard.connection");
-const connection = typeof configured === "string" ? configured : undefined;
-const prefix = `memory_product_${randomUUID().replaceAll("-", "").slice(0, 10)}`;
+const database = postgresProductScope("memory_product");
 type Hit = { path: string; source: string; score: number; snippet: string };
 type Result = { results: Hit[]; unavailable?: boolean; error?: string; action?: string };
 
-describe.skipIf(!connection)("PostgreSQL memory_search product flows", () => {
+describe.skipIf(!database.connection)("PostgreSQL memory_search product flows", () => {
   let state: Awaited<ReturnType<typeof createOpenClawTestState>>;
   let config: OpenClawConfig;
   let run: ReturnType<typeof AsyncLocalStorage.snapshot>;
   const managers = new Map<string, MemorySearchManager>();
-  const workspaces = new Map<string, string>();
-  const ids = ["main", "other", "semantic", "trigram"];
-  const client = new pg.Client({ connectionString: connection });
+  const workspace = (id: string) => path.join(state.workspaceDir, id);
+  const agent = (id: string, searchConfig?: NonNullable<OpenClawConfig["memory"]>["search"]) => ({
+    workspace: workspace(id),
+    ...(searchConfig ? { memory: { search: searchConfig } } : {}),
+  });
 
   beforeAll(async () => {
     state = await createOpenClawTestState({
@@ -85,38 +80,25 @@ describe.skipIf(!connection)("PostgreSQL memory_search product flows", () => {
       layout: "state-only",
     });
     await configureMemoryCoreDreamingStateForTests();
-    await client.connect();
-    for (const id of ids) {
-      const workspace = path.join(state.workspaceDir, id);
-      workspaces.set(id, workspace);
-      await fs.mkdir(path.join(workspace, "memory"), { recursive: true });
+    await database.connect();
+    for (const id of ["main", "other", "semantic", "trigram"]) {
+      await fs.mkdir(path.join(workspace(id), "memory"), { recursive: true });
     }
     config = {
       database: { engine: "postgres" },
       plugins: { enabled: false },
       tools: { sessions: { visibility: "agent" } },
       agents: {
-        entries: Object.fromEntries(
-          ids.map((id) => [
-            id,
-            {
-              workspace: workspaces.get(id)!,
-              ...(id === "semantic"
-                ? {
-                    memory: {
-                      search: {
-                        provider: "openai",
-                        model: "product-fixture",
-                        store: { vector: { enabled: true } },
-                      },
-                    },
-                  }
-                : id === "trigram"
-                  ? { memory: { search: { store: { fts: { tokenizer: "trigram" } } } } }
-                  : {}),
-            },
-          ]),
-        ),
+        entries: {
+          main: agent("main"),
+          other: agent("other"),
+          semantic: agent("semantic", {
+            provider: "openai",
+            model: "product-fixture",
+            store: { vector: { enabled: true } },
+          }),
+          trigram: agent("trigram", { store: { fts: { tokenizer: "trigram" } } }),
+        },
       },
       memory: {
         citations: "off",
@@ -131,13 +113,7 @@ describe.skipIf(!connection)("PostgreSQL memory_search product flows", () => {
       },
     };
     setRuntimeConfigSnapshot(config);
-    run = withDatabaseEngineSelection(
-      {
-        effectiveEngines: resolveDatabaseFamilyEngines(config),
-        postgres: { connection: connection!, schemaPrefix: prefix },
-      },
-      () => AsyncLocalStorage.snapshot(),
-    );
+    run = database.select(() => AsyncLocalStorage.snapshot(), config);
   });
 
   afterAll(async () => {
@@ -146,21 +122,11 @@ describe.skipIf(!connection)("PostgreSQL memory_search product flows", () => {
       resetMemoryCoreDreamingStateForTests();
       await state.cleanup();
     });
-    try {
-      const schemas = await client.query<{ nspname: string }>(
-        "SELECT nspname FROM pg_namespace WHERE left(nspname, $1) = $2",
-        [prefix.length + 1, `${prefix}_`],
-      );
-      for (const { nspname } of schemas.rows) {
-        await client.query(`DROP SCHEMA "${nspname.replaceAll('"', '""')}" CASCADE`);
-      }
-    } finally {
-      await client.end();
-    }
+    await database.close();
   });
 
   async function write(agentId: string, name: string, text: string) {
-    const file = path.join(workspaces.get(agentId)!, "memory", name);
+    const file = path.join(workspace(agentId), "memory", name);
     await fs.writeFile(file, text);
     invalidate(agentId, file);
   }
@@ -190,17 +156,12 @@ describe.skipIf(!connection)("PostgreSQL memory_search product flows", () => {
           agentId,
           runInBackgroundContext: run,
         });
-        if (!result.manager) {
-          throw new Error(result.error ?? "Expected memory manager");
-        }
+        assert(result.manager, result.error ?? "Expected memory manager");
         manager = result.manager;
         managers.set(agentId, manager);
       }
-      if (!manager.sync) {
-        throw new Error("Expected a memory indexing manager");
-      }
+      assert(manager.sync, "Expected a memory indexing manager");
       await manager.sync({ reason: "cli", force });
-      return manager;
     });
   }
 
@@ -216,9 +177,7 @@ describe.skipIf(!connection)("PostgreSQL memory_search product flows", () => {
         agentSessionKey: `agent:${options.agentId ?? "main"}:main`,
         runInBackgroundContext: run,
       });
-      if (!tool) {
-        throw new Error("Expected public memory_search tool");
-      }
+      assert(tool, "Expected public memory_search tool");
       const result = await tool.execute("postgres-product-search", {
         query,
         corpus: options.corpus ?? "memory",
@@ -266,8 +225,8 @@ describe.skipIf(!connection)("PostgreSQL memory_search product flows", () => {
     expect(await paths("saffron")).toEqual(["memory/rhododendron-map.md"]);
     await sync("main", true);
     expect(await paths("saffron")).toEqual(["memory/rhododendron-map.md"]);
-    await fs.unlink(path.join(workspaces.get("main")!, "memory", "rhododendron-map.md"));
-    invalidate("main", path.join(workspaces.get("main")!, "memory", "rhododendron-map.md"));
+    await fs.unlink(path.join(workspace("main"), "memory", "rhododendron-map.md"));
+    invalidate("main", path.join(workspace("main"), "memory", "rhododendron-map.md"));
     await sync();
     expect((await search("saffron")).results).toEqual([]);
     expect((await search("rhododendron-map")).results).toEqual([]);
@@ -320,7 +279,7 @@ describe.skipIf(!connection)("PostgreSQL memory_search product flows", () => {
     expect(await semantic()).toMatchObject(updated);
     await sync("semantic", true);
     expect(await semantic()).toMatchObject(updated);
-    const target = path.join(workspaces.get("semantic")!, "memory", "target.md");
+    const target = path.join(workspace("semantic"), "memory", "target.md");
     await fs.unlink(target);
     invalidate("semantic", target);
     await sync("semantic");
