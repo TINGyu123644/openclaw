@@ -13,16 +13,20 @@ function createWidgetFrame(): HTMLIFrameElement {
   return frame;
 }
 
-function watchSnapshot(frame: HTMLIFrameElement) {
-  const postMessage = vi.spyOn(frame.contentWindow!, "postMessage").mockImplementation(() => {});
+function watchSnapshot(frame: HTMLIFrameElement, stubPostMessage = true) {
+  const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+  if (stubPostMessage) {
+    postMessage.mockImplementation(() => {});
+  }
   return {
     postMessage,
-    reply: (payload: { dataUrl: string } | { error: string }) => {
+    reply: (payload: { dataUrl: string } | { error: string }, overrides: MessageEventInit = {}) => {
       const request = postMessage.mock.calls[0]?.[0] as { id: string };
       window.dispatchEvent(
         new MessageEvent("message", {
           source: frame.contentWindow,
           data: { type: "openclaw:widget-snapshot", id: request.id, ...payload },
+          ...overrides,
         }),
       );
     },
@@ -47,12 +51,22 @@ afterEach(() => {
 });
 
 describe("widget export", () => {
-  it("matches snapshot replies by frame source and request id", async () => {
+  function startSnapshot(title = "Current widget", action: "copy" | "download" = "download") {
     const frame = createWidgetFrame();
-    const { postMessage, reply } = watchSnapshot(frame);
+    const snapshot = watchSnapshot(frame);
+    return { ...snapshot, result: exportWidget(action, frame, title) };
+  }
+
+  function watchHtmlDownload(url: string) {
+    const createUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue(url);
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    return createUrl;
+  }
+
+  it("matches snapshot replies by frame source and request id", async () => {
     const downloads = watchDownloads();
+    const { postMessage, reply, result } = startSnapshot();
     let settled = false;
-    const result = exportWidget("download", frame, "Current widget");
     void result.finally(() => {
       settled = true;
     });
@@ -61,19 +75,13 @@ describe("widget export", () => {
       expect.objectContaining({ type: "openclaw:widget-snapshot-request" }),
       "*",
     );
-    const request = postMessage.mock.calls[0]?.[0] as { id: string };
-    window.dispatchEvent(
-      new MessageEvent("message", {
-        source: frame.contentWindow,
+    reply(
+      { dataUrl: PNG_DATA_URL },
+      {
         data: { type: "openclaw:widget-snapshot", id: "snapshot-2", dataUrl: PNG_DATA_URL },
-      }),
+      },
     );
-    window.dispatchEvent(
-      new MessageEvent("message", {
-        source: window,
-        data: { type: "openclaw:widget-snapshot", id: request.id, dataUrl: PNG_DATA_URL },
-      }),
-    );
+    reply({ dataUrl: PNG_DATA_URL }, { source: window });
     await Promise.resolve();
     expect(settled).toBe(false);
 
@@ -85,11 +93,10 @@ describe("widget export", () => {
   it("selects the copy notice and HTML download fallbacks after a timeout", async () => {
     vi.useFakeTimers();
     const frame = createWidgetFrame();
-    const fetchDocument = vi.fn(async () => new Response("<p>Legacy</p>", { status: 200 }));
     const downloads = watchDownloads();
+    const fetchDocument = vi.fn(async () => new Response("<p>Legacy</p>", { status: 200 }));
     vi.stubGlobal("fetch", fetchDocument);
-    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:legacy-widget");
-    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    watchHtmlDownload("blob:legacy-widget");
 
     const copyResult = exportWidget("copy", frame, "Legacy widget");
     await vi.advanceTimersByTimeAsync(5_000);
@@ -104,8 +111,6 @@ describe("widget export", () => {
   });
 
   it("starts clipboard writing before the snapshot resolves", async () => {
-    const frame = createWidgetFrame();
-    const { reply } = watchSnapshot(frame);
     const blob = new Blob(["image"], { type: "image/png" });
     vi.stubGlobal(
       "fetch",
@@ -122,7 +127,7 @@ describe("widget export", () => {
     });
     vi.stubGlobal("navigator", { clipboard: { write } });
 
-    const result = exportWidget("copy", frame, "Current widget");
+    const { reply, result } = startSnapshot("Current widget", "copy");
     expect(write).toHaveBeenCalledOnce();
     reply({ dataUrl: PNG_DATA_URL });
     await expect(result).resolves.toBe("png");
@@ -131,12 +136,11 @@ describe("widget export", () => {
   it("downloads retained authenticated HTML when an isolated widget cannot snapshot", async () => {
     vi.useFakeTimers();
     const frame = createWidgetFrame();
+    const downloads = watchDownloads();
     frame.src = "https://sandbox.example/mcp-app-sandbox";
     const fetchDocument = vi.fn();
-    const downloads = watchDownloads();
     vi.stubGlobal("fetch", fetchDocument);
-    const createUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:widget-source");
-    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    const createUrl = watchHtmlDownload("blob:widget-source");
     const result = exportWidget("download", frame, "Isolated widget", {
       documentHtml: "<p>Authenticated document</p>",
     });
@@ -148,29 +152,22 @@ describe("widget export", () => {
   });
 
   it("does not use legacy fallbacks for an explicit bridge error", async () => {
-    const frame = createWidgetFrame();
     const fetchDocument = vi.fn();
     vi.stubGlobal("fetch", fetchDocument);
-    const { reply } = watchSnapshot(frame);
-    const result = exportWidget("download", frame, "Broken widget");
+    const { reply, result } = startSnapshot("Broken widget");
     reply({ error: "canvas is not exportable" });
 
     await expect(result).rejects.toThrow("canvas is not exportable");
     expect(fetchDocument).not.toHaveBeenCalled();
   });
 
-  it.each([["... <> ", "widget.png"]])(
-    "sanitizes PNG download filename %s",
-    async (title, filename) => {
-      const frame = createWidgetFrame();
-      const downloads = watchDownloads();
-      const { reply } = watchSnapshot(frame);
-      const result = exportWidget("download", frame, title);
-      reply({ dataUrl: PNG_DATA_URL });
-      await expect(result).resolves.toBe("png");
-      expect(downloads).toEqual([[PNG_DATA_URL, filename]]);
-    },
-  );
+  it("sanitizes an empty PNG download filename", async () => {
+    const downloads = watchDownloads();
+    const { reply, result } = startSnapshot("... <> ");
+    reply({ dataUrl: PNG_DATA_URL });
+    await expect(result).resolves.toBe("png");
+    expect(downloads).toEqual([[PNG_DATA_URL, "widget.png"]]);
+  });
 
   it("rejects non-PNG and oversized snapshot replies", async () => {
     for (const dataUrl of [
@@ -179,18 +176,12 @@ describe("widget export", () => {
       `data:image/png;base64,${"A".repeat(32 * 1024 * 1024)}`,
     ]) {
       const frame = createWidgetFrame();
-      const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
+      const { postMessage, reply } = watchSnapshot(frame, false);
       const result = exportWidget("download", frame, "Current widget");
       expect(postMessage).toHaveBeenCalledOnce();
       const request = postMessage.mock.calls[0]?.[0];
       expect(request).toBeDefined();
-      const id = (request as { id: string }).id;
-      window.dispatchEvent(
-        new MessageEvent("message", {
-          source: frame.contentWindow,
-          data: { type: "openclaw:widget-snapshot", id, dataUrl },
-        }),
-      );
+      reply({ dataUrl });
       await expect(result).rejects.toThrow("widget returned an invalid snapshot");
     }
   });
