@@ -1,33 +1,26 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { observeSqliteReadSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import {
-  clearRuntimeConfigSnapshot,
-  setRuntimeConfigSnapshot,
-} from "../config/runtime-snapshot.js";
+import * as config from "../config/runtime-snapshot.js";
 import { saveExecApprovals } from "../infra/exec-approvals-store.test-support.js";
 import type { ExecAsk, ExecSecurity } from "../infra/exec-approvals.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
 import { createPluginRecord } from "../plugins/status.test-helpers.js";
-import {
-  closeOpenClawStateDatabaseAsync,
-  closeOpenClawStateDatabaseForTest,
-} from "../state/openclaw-state-db.js";
+import * as state from "../state/openclaw-state-db.js";
 import { invokeRegisteredNodeHostCommand } from "./plugin-node-host.js";
 
-let root: string;
 beforeEach(() => {
-  root = tempDirs.make("node-plugin-exec-policy-");
+  const root = tempDirs.make("node-plugin-exec-policy-");
   vi.stubEnv("OPENCLAW_STATE_DIR", root);
-  setRuntimeConfigSnapshot({});
+  config.setRuntimeConfigSnapshot({});
   saveExecApprovals({ version: 1, defaults: { security: "full", ask: "off" } });
 });
 afterEach(async () => {
-  await closeOpenClawStateDatabaseAsync();
-  closeOpenClawStateDatabaseForTest();
-  clearRuntimeConfigSnapshot();
+  await state.closeOpenClawStateDatabaseAsync();
+  state.closeOpenClawStateDatabaseForTest();
+  config.clearRuntimeConfigSnapshot();
   resetPluginRuntimeStateForTest();
   vi.unstubAllEnvs();
 });
@@ -83,7 +76,7 @@ async function checkLaunch(
 
 function setPolicy(owner: "config" | "approvals", security: ExecSecurity, ask: ExecAsk) {
   if (owner === "config") {
-    setRuntimeConfigSnapshot({ tools: { exec: { security, ask } } });
+    config.setRuntimeConfigSnapshot({ tools: { exec: { security, ask } } });
   } else {
     saveExecApprovals({ version: 1, defaults: { security, ask } });
   }
@@ -102,39 +95,33 @@ it("checks an in-process policy change without SQLite immediately before spawn",
   expect(queries).toEqual([]);
 });
 
-it.each(["config", "approvals"] as const)(
-  "keeps %s restrictions for Full and explicit human decisions",
-  async (owner) => {
-    for (const security of ["full", "allowlist", "deny"] as const) {
-      for (const ask of ["off", "on-miss", "always"] as const) {
-        for (const source of ["session-full", "human-approved"] as const) {
-          setPolicy(owner, security, ask);
-          const allowed =
-            source === "human-approved"
-              ? security !== "deny"
-              : security === "full" && ask === "off";
-          await checkLaunch(source, { allowed });
-        }
+it.each([
+  ["config", "initial"],
+  ["config", "tightened"],
+  ["approvals", "initial"],
+  ["approvals", "tightened"],
+] as const)("%s policy is enforced when %s", async (owner, timing) => {
+  const tightened = timing === "tightened";
+  for (const security of ["full", "allowlist", "deny"] as const) {
+    const asks: ExecAsk[] = tightened
+      ? [security === "full" ? "always" : "off"]
+      : ["off", "on-miss", "always"];
+    for (const ask of asks) {
+      for (const source of ["session-full", "human-approved"] as const) {
+        setPolicy(owner, tightened ? "full" : security, tightened ? "off" : ask);
+        const allowed =
+          !tightened &&
+          (source === "human-approved"
+            ? security !== "deny"
+            : security === "full" && ask === "off");
+        await checkLaunch(source, {
+          allowed,
+          prepare: tightened ? () => setPolicy(owner, security, ask) : undefined,
+        });
       }
     }
-  },
-);
-
-it.each(["config", "approvals"] as const)(
-  "refuses %s tightening during awaited setup",
-  async (owner) => {
-    for (const source of ["session-full", "human-approved"] as const) {
-      for (const [security, ask] of [
-        ["deny", "off"],
-        ["allowlist", "off"],
-        ["full", "always"],
-      ] as const) {
-        setPolicy(owner, "full", "off");
-        await checkLaunch(source, { prepare: () => setPolicy(owner, security, ask) });
-      }
-    }
-  },
-);
+  }
+});
 
 it.each(["cancel", "plugin-replaced"] as const)(
   "refuses %s during awaited setup",

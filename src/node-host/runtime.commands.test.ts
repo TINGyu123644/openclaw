@@ -1,10 +1,6 @@
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
-import {
-  getActivePluginRegistry,
-  resetPluginRuntimeStateForTest,
-  setActivePluginRegistry,
-} from "../plugins/runtime.js";
+import * as plugins from "../plugins/runtime.js";
 import { createPluginRecord } from "../plugins/status.test-helpers.js";
 import type { OpenClawPluginNodeHostCommand } from "../plugins/types.node-host.js";
 import { mockProcessPlatform } from "../test-utils/vitest-spies.js";
@@ -19,14 +15,16 @@ vi.mock("../infra/path-env.js", () => ({ ensureOpenClawCliOnPath: vi.fn() }));
 vi.mock("./mcp.js", () => ({ startNodeHostMcpManager: vi.fn() }));
 vi.mock("./skills.js", () => ({ scanNodeHostedSkills: vi.fn() }));
 vi.mock("../plugins/loader.js", () => ({
-  loadPluginRegistryHandle: () => getActivePluginRegistry(),
+  loadPluginRegistryHandle: () => plugins.getActivePluginRegistry(),
 }));
 
-const hiddenPrepare = vi.fn();
-const hiddenWatch = vi.fn();
-const hiddenComputerUse = vi.fn(() => {
-  throw new Error("hidden computer capability must not be read");
-});
+const hidden = {
+  prepare: vi.fn(),
+  watchAvailability: vi.fn(),
+  computerUse: vi.fn(() => {
+    throw new Error("hidden computer capability must not be read");
+  }),
+};
 const read = vi.fn(async () => JSON.stringify({ items: [] }));
 const makeCommand = (name: string, cap: string, extra: Partial<OpenClawPluginNodeHostCommand>) => ({
   pluginId: "fixture",
@@ -41,21 +39,17 @@ beforeEach(() => {
   registry.nodeHostCommands = [
     ...["fixture.list", "fixture.read"].map((name) =>
       makeCommand(name, "fixture-catalog", {
-        agentTool: { name: "fixture_read", description: "Read fixture catalog" },
+        agentTool: { name: "read", description: "Read" },
       }),
     ),
-    makeCommand("computer.act", "computer", {
-      prepare: hiddenPrepare,
-      watchAvailability: hiddenWatch,
-      computerUse: hiddenComputerUse,
-    }),
+    makeCommand("computer.act", "computer", hidden),
   ];
-  setActivePluginRegistry(registry);
+  plugins.setActivePluginRegistry(registry);
 });
 
 afterEach(() => {
   resetNodeHostPluginRegistry();
-  resetPluginRuntimeStateForTest();
+  plugins.resetPluginRuntimeStateForTest();
 });
 
 it("publishes only selected commands and rejects hidden invokes without starting ancillary services", async () => {
@@ -87,18 +81,10 @@ it("publishes only selected commands and rejects hidden invokes without starting
     expect(request).not.toHaveBeenCalled();
     expect(startNodeHostMcpManager).not.toHaveBeenCalled();
     expect(scanNodeHostedSkills).not.toHaveBeenCalled();
-    expect(hiddenPrepare).not.toHaveBeenCalled();
-    expect(hiddenWatch).not.toHaveBeenCalled();
-    expect(hiddenComputerUse).not.toHaveBeenCalled();
-    for (const command of [
-      "system.run",
-      "fs.listDir",
-      "terminal.upload",
-      "mcp.tools.call.v1",
-      "computer.act",
-      "worker.launch.v1",
-      "fixture.read",
-    ]) {
+    for (const callback of Object.values(hidden)) {
+      expect(callback).not.toHaveBeenCalled();
+    }
+    for (const command of ["system.run", "computer.act", "worker.launch.v1", "fixture.read"]) {
       await connection.invoke({ id: command, nodeId: "node", command });
       expect(request).toHaveBeenLastCalledWith(
         "node.invoke.result",

@@ -11,7 +11,6 @@ const mocks = vi.hoisted(() => {
     retireIdleWorkers: vi.fn<() => Promise<void>>(async () => undefined),
     workerHasActiveWork: vi.fn(async () => false),
     pluginHasActiveWork: vi.fn(() => false),
-    initializeWorkerSupervisor: vi.fn(async () => undefined),
     disconnectPlugins: vi.fn<() => Promise<void>>(async () => undefined),
     handleInvoke: vi.fn(async () => undefined),
     progressStartHeartbeats: vi.fn(),
@@ -40,7 +39,7 @@ vi.mock("./node-invoke-progress.js", () => ({
 
 vi.mock("./node-worker-supervisor.js", () => ({
   createNodeWorkerSupervisor: vi.fn(() => ({
-    initialize: mocks.initializeWorkerSupervisor,
+    initialize: async () => undefined,
     hasActiveWork: mocks.workerHasActiveWork,
     retireIdle: mocks.retireIdleWorkers,
     close: mocks.closeWorkerSupervisor,
@@ -78,7 +77,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.closeMcp.mockResolvedValue(undefined);
   mocks.closeWorkerSupervisor.mockResolvedValue(undefined);
-  mocks.initializeWorkerSupervisor.mockResolvedValue(undefined);
   mocks.workerHasActiveWork.mockResolvedValue(false);
   mocks.retireIdleWorkers.mockResolvedValue(undefined);
   mocks.pluginHasActiveWork.mockReturnValue(false);
@@ -89,9 +87,8 @@ export function createNodeHostClient(
   request: (...args: Parameters<NodeHostClient["request"]>) => Promise<unknown>,
 ): NodeHostClient {
   return {
-    async request<T>(...args: Parameters<NodeHostClient["request"]>) {
-      return (await request(...args)) as T;
-    },
+    request: async <T>(...args: Parameters<NodeHostClient["request"]>) =>
+      (await request(...args)) as T,
   };
 }
 

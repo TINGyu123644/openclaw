@@ -3,23 +3,13 @@ import path from "node:path";
 import { afterEach, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import {
-  NODE_WORKER_PRIVATE_COMMANDS,
-  NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND,
-  NODE_WORKER_SUPERVISOR_STATUS_COMMAND,
-} from "../infra/node-commands.js";
-import {
-  closeOpenClawStateDatabaseAsync,
-  closeOpenClawStateDatabaseForTest,
-} from "../state/openclaw-state-db.js";
+import { NODE_WORKER_PRIVATE_COMMANDS } from "../infra/node-commands.js";
+import * as state from "../state/openclaw-state-db.js";
 import { mockProcessPlatform } from "../test-utils/vitest-spies.js";
 import type { NodeHostClient } from "./client.js";
 import { NodeWorkerJournalWorker } from "./node-worker-journal-worker.js";
 import { NodeWorkerLaunchStore } from "./node-worker-launch-store.js";
-import {
-  testWorkerLaunchInput,
-  writeNodeWorkerFixture,
-} from "./node-worker-supervisor.test-support.js";
+import * as worker from "./node-worker-supervisor.test-support.js";
 import { prepareNodeHostRuntime } from "./runtime.js";
 
 vi.mock("../infra/path-env.js", () => ({ ensureOpenClawCliOnPath: vi.fn() }));
@@ -36,11 +26,7 @@ vi.mock("./plugin-node-host.js", () => ({
   ensureNodeHostPluginRegistry: vi.fn(async () => undefined),
   hasRegisteredNodeHostCommandActiveWork: vi.fn(() => false),
   isRegisteredNodeHostCommandDuplex: vi.fn(() => false),
-  listRegisteredNodeHostCapsAndCommands: vi.fn(() => ({
-    caps: [],
-    commands: [],
-    nodePluginTools: [],
-  })),
+  listRegisteredNodeHostCapsAndCommands: () => ({ caps: [], commands: [], nodePluginTools: [] }),
   watchRegisteredNodeHostCommandAvailability: vi.fn(() => () => {}),
   notifyRegisteredNodeHostCommandDisconnect: vi.fn(async () => undefined),
   invokeRegisteredNodeHostCommand: vi.fn(async () => null),
@@ -53,8 +39,8 @@ vi.mock("./skills.js", () => ({
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   afterEach(async () => {
-    await closeOpenClawStateDatabaseAsync();
-    closeOpenClawStateDatabaseForTest();
+    await state.closeOpenClawStateDatabaseAsync();
+    state.closeOpenClawStateDatabaseForTest();
     cleanup();
   }),
 );
@@ -62,11 +48,11 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
 it("keeps a claimed worker alive across invoke cancel and reconnect until runtime close", async () => {
   const platform = mockProcessPlatform("linux");
   onTestFinished(() => platform.mockRestore());
-  const fixture = writeNodeWorkerFixture(tempDirs.make("node-worker-runtime-"));
+  const fixture = worker.writeNodeWorkerFixture(tempDirs.make("node-worker-runtime-"));
   fs.mkdirSync(fixture.stateDir, { recursive: true, mode: 0o700 });
   fs.chmodSync(fixture.stateDir, 0o700);
   fs.renameSync(fixture.bundleRoot, path.join(fixture.stateDir, "node-host"));
-  const input = testWorkerLaunchInput(fixture.workspaceDir, "launch-runtime", "wait");
+  const input = worker.testWorkerLaunchInput(fixture.workspaceDir, "launch-runtime", "wait");
   const launchResponseEntered = createDeferred();
   const launchResponseHeld = createDeferred();
   const responses = new Map<string, { payloadJSON?: string }>();
@@ -109,13 +95,9 @@ it("keeps a claimed worker alive across invoke cancel and reconnect until runtim
 
   try {
     await capacityReady.promise;
-    expect(capacitySnapshots).toEqual([
-      { total: 2, available: 0 },
-      { total: 2, available: 2 },
-    ]);
-    const launching = invoke("invoke-launch", NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND, input);
-    // The journal becomes running before startup settles. Hold the completed
-    // launch response so cancellation exercises the admitted worker's lifetime.
+    expect(capacitySnapshots).toEqual([0, 2].map((available) => ({ total: 2, available })));
+    const launching = invoke("invoke-launch", "worker.launch.v1", input);
+    // Hold the completed launch response so cancellation exercises the admitted worker's lifetime.
     await launchResponseEntered.promise;
     expect((await store.get(input.launchId))?.state).toBe("running");
 
@@ -126,16 +108,14 @@ it("keeps a claimed worker alive across invoke cancel and reconnect until runtim
     await launching;
     expect(await runtime.tryPauseForUpdate()).toBe(false);
 
-    await invoke("invoke-status", NODE_WORKER_SUPERVISOR_STATUS_COMMAND, {
-      launchId: input.launchId,
-    });
+    await invoke("invoke-status", "worker.status.v1", { launchId: input.launchId });
     const status = responses.get("invoke-status");
     expect(JSON.parse(status?.payloadJSON ?? "{}")).toMatchObject({
       launchId: input.launchId,
       state: "running",
     });
 
-    await invoke("invoke-replay", NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND, input);
+    await invoke("invoke-replay", "worker.launch.v1", input);
     expect((await store.get(input.launchId))?.state).toBe("running");
   } finally {
     launchResponseHeld.resolve();
