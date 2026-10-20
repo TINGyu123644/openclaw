@@ -3,7 +3,12 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { MemoryDB } from "./lancedb-store.js";
 import { installTmpDirHarness } from "./test-helpers.js";
 
-const entry = { vector: [1, 0], importance: 0.8, category: "preference" as const };
+const entry = (text: string) => ({
+  text,
+  vector: [1, 0],
+  importance: 0.8,
+  category: "preference" as const,
+});
 const alphaText = "alpha private preference";
 const betaText = "beta private preference";
 const { getDbPath } = installTmpDirHarness({ prefix: "openclaw-memory-scope-" });
@@ -16,7 +21,7 @@ describe("MemoryDB agent isolation", () => {
   afterEach(() => db.close());
 
   test("cancels a timed-out native search and keeps the table usable", async () => {
-    const stored = await db.store("alpha", { ...entry, text: alphaText });
+    const stored = await db.store("alpha", entry(alphaText));
 
     await expect(db.search("alpha", [1, 0], 5, 0, { timeoutMs: 0 })).rejects.toThrow(
       "Query timeout",
@@ -27,8 +32,8 @@ describe("MemoryDB agent isolation", () => {
   });
 
   test("scopes store, search, list, query, delete, and restart reads", async () => {
-    const alpha = await db.store("alpha", { ...entry, text: alphaText });
-    await db.store("beta", { ...entry, text: betaText, importance: 0.9 });
+    const alpha = await db.store("alpha", entry(alphaText));
+    await db.store("beta", entry(betaText));
 
     await expect(db.search("alpha", [1, 0], 5, 0)).resolves.toMatchObject([
       { entry: { id: alpha.id, text: alphaText } },
@@ -51,12 +56,7 @@ describe("MemoryDB agent isolation", () => {
   });
 
   test("rejects search when a persisted table is reopened with a different vector dimension", async () => {
-    await db.store("main", {
-      ...entry,
-      text: "fixed-size vector",
-      importance: 0.7,
-      category: "fact",
-    });
+    await db.store("main", entry("fixed-size vector"));
     db.close();
 
     db = new MemoryDB(getDbPath(), 3);
@@ -68,14 +68,7 @@ describe("MemoryDB agent isolation", () => {
   test("refuses an unscoped legacy table until doctor migrates it", async () => {
     const connection = await lancedb.connect(getDbPath());
     const table = await connection.createTable("memories", [
-      {
-        id: "11111111-1111-4111-8111-111111111111",
-        ...entry,
-        text: "legacy shared memory",
-        importance: 0.7,
-        category: "fact",
-        createdAt: 1,
-      },
+      { ...entry("legacy"), id: "legacy", createdAt: 1 },
     ]);
     table.close();
     connection.close();
