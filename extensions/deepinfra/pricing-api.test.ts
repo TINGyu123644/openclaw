@@ -93,20 +93,17 @@ describe("native DeepInfra pricing contract", () => {
     { rate_per_explicit_cache_write_token: [] },
     { rate_per_explicit_cache_write_token: { "5m": "1.25" } },
     { explicit_cache_granularity_tokens: 0 },
-  ])("rejects malformed declared token pricing without retaining partial rates: %j", (invalid) => {
-    expect(parseWith(invalid)).toBeUndefined();
-  });
+  ])("rejects malformed token pricing without partial rates: %j", (invalid) =>
+    expect(parseWith(invalid)).toBeUndefined(),
+  );
 
   it.each(
     [
       [{ id: "fixture/foreign-identity", pricing }],
       [paid, { model_name: "fixture/bad", pricing: null }],
       [{ model_name: "fixture/image", pricing: { type: "image_units" } }],
-    ].map((payload) => ({ payload })),
-  )(
-    "rejects foreign identities, malformed token prices and non-token-only feeds: $payload",
-    ({ payload }) => {
-      expect(parseDeepInfraPricingCatalog(payload)).toBeUndefined();
-    },
+    ].map((payload) => [payload] as const),
+  )("rejects foreign identities, malformed prices and non-token feeds: %j", (payload) =>
+    expect(parseDeepInfraPricingCatalog(payload)).toBeUndefined(),
   );
 });

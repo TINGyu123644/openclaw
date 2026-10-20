@@ -1,11 +1,10 @@
 import {
   getProviderHttpMocks,
   installProviderHttpMockCleanup,
-  requireFirstPostJsonRecordRequest,
-  requireFirstPostJsonRequest,
 } from "openclaw/plugin-sdk/provider-http-test-mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildDeepInfraImageGenerationProvider } from "./image-generation-provider.js";
+import { baseUrl, expectMediaRequest, expectRequestConfig } from "./media-request.test-support.js";
 
 const {
   postJsonRequestMock,
@@ -16,7 +15,6 @@ const {
 
 installProviderHttpMockCleanup();
 const model = "black-forest-labs/FLUX-1-schnell";
-const baseUrl = "https://api.deepinfra.com/v1/openai";
 const imageResponse = (bytes: Buffer, revised_prompt?: string) => ({
   response: Response.json({ data: [{ b64_json: bytes.toString("base64"), revised_prompt }] }),
   release: vi.fn(async () => {}),
@@ -32,9 +30,7 @@ describe("deepinfra image generation provider", () => {
   });
 
   it("declares generation and single-reference edit support", () => {
-    const provider = buildDeepInfraImageGenerationProvider();
-
-    expect(provider).toMatchObject({
+    expect(buildDeepInfraImageGenerationProvider()).toMatchObject({
       id: "deepinfra",
       defaultModel: model,
       models: [
@@ -52,8 +48,7 @@ describe("deepinfra image generation provider", () => {
     const response = imageResponse(jpegBytes, "red square");
     postJsonRequestMock.mockResolvedValue(response);
 
-    const provider = buildDeepInfraImageGenerationProvider();
-    const result = await provider.generateImage({
+    const result = await buildDeepInfraImageGenerationProvider().generateImage({
       provider: "deepinfra",
       model: `deepinfra/${model}`,
       prompt: "red square",
@@ -63,29 +58,10 @@ describe("deepinfra image generation provider", () => {
       cfg: { models: { providers: { deepinfra: { baseUrl: `${baseUrl}/` } } } } as never,
     });
 
-    expect(resolveProviderHttpRequestConfigMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        provider: "deepinfra",
-        capability: "image",
-        transport: "http",
-        defaultBaseUrl: baseUrl,
-        allowPrivateNetwork: false,
-      }),
-    );
-    expect(postJsonRequestMock).toHaveBeenCalledOnce();
-    const jsonRequest = requireFirstPostJsonRequest(
-      postJsonRequestMock,
-      "DeepInfra JSON image request",
-    );
-    const jsonRequestHeaders = Reflect.get(jsonRequest ?? {}, "headers");
-    expect(jsonRequestHeaders).toBeInstanceOf(Headers);
-    expect(Object.fromEntries((jsonRequestHeaders as Headers).entries())).toEqual({
-      authorization: "Bearer deepinfra-key",
-      "content-type": "application/json",
-    });
-    expect(jsonRequest).toEqual({
-      url: `${baseUrl}/images/generations`,
-      headers: jsonRequestHeaders,
+    expectRequestConfig(resolveProviderHttpRequestConfigMock, "image");
+    expectMediaRequest(postJsonRequestMock, {
+      path: "/images/generations",
+      apiKey: "deepinfra-key",
       timeoutMs: 12_345,
       body: {
         model,
@@ -94,9 +70,6 @@ describe("deepinfra image generation provider", () => {
         size: "512x512",
         response_format: "b64_json",
       },
-      fetchFn: fetch,
-      allowPrivateNetwork: false,
-      dispatcherPolicy: undefined,
     });
     expect(result.images).toEqual([
       {
@@ -114,8 +87,7 @@ describe("deepinfra image generation provider", () => {
       imageResponse(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
     );
 
-    const provider = buildDeepInfraImageGenerationProvider();
-    const result = await provider.generateImage({
+    const result = await buildDeepInfraImageGenerationProvider().generateImage({
       provider: "deepinfra",
       model,
       prompt: "make it neon",
@@ -123,26 +95,12 @@ describe("deepinfra image generation provider", () => {
       cfg: {} as never,
     });
 
-    expect(postMultipartRequestMock).toHaveBeenCalledOnce();
-    const multipartRequest = requireFirstPostJsonRecordRequest(
-      postMultipartRequestMock,
-      "DeepInfra multipart image request",
-    );
-    const multipartHeaders = Reflect.get(multipartRequest, "headers");
-    expect(multipartHeaders).toBeInstanceOf(Headers);
-    expect(Object.fromEntries((multipartHeaders as Headers).entries())).toEqual({
-      authorization: "Bearer deepinfra-key",
+    const { body } = expectMediaRequest(postMultipartRequestMock, {
+      path: "/images/edits",
+      apiKey: "deepinfra-key",
+      multipart: true,
     });
-    const form = Reflect.get(multipartRequest, "body") as FormData;
-    expect(multipartRequest).toEqual({
-      url: `${baseUrl}/images/edits`,
-      headers: multipartHeaders,
-      body: form,
-      timeoutMs: undefined,
-      fetchFn: fetch,
-      allowPrivateNetwork: false,
-      dispatcherPolicy: undefined,
-    });
+    const form = body as FormData;
     expect(["model", "prompt", "response_format"].map((key) => form.get(key))).toEqual([
       model,
       "make it neon",

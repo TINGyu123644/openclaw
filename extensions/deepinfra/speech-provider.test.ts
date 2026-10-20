@@ -1,10 +1,10 @@
-import { requireFirstPostJsonRequest } from "openclaw/plugin-sdk/test-fixtures";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { baseUrl, expectMediaRequest, expectRequestConfig } from "./media-request.test-support.js";
 import { buildDeepInfraSpeechProvider } from "./speech-provider.js";
 
-const baseUrl = "https://api.deepinfra.com/v1/openai";
 const model = "hexgrad/Kokoro-82M";
 const voice = "af_bella";
+const context = { cfg: {} as never, timeoutMs: 30_000 };
 const http = vi.hoisted(() => ({
   assertOkOrThrowHttpError: vi.fn(async () => {}),
   postJsonRequest: vi.fn(),
@@ -38,24 +38,22 @@ describe("deepinfra speech provider", () => {
   it("normalizes provider-owned speech config", () => {
     const provider = buildDeepInfraSpeechProvider();
     expect(provider.defaultTimeoutMs).toBe(120_000);
-    expect(
-      provider.resolveConfig?.({
-        cfg: {} as never,
-        timeoutMs: 30_000,
-        rawConfig: {
-          providers: {
-            deepinfra: {
-              apiKey: "sk-test",
-              baseUrl: `${baseUrl}/`,
-              modelId: `deepinfra/${model}`,
-              voiceId: voice,
-              speed: 1.1,
-              responseFormat: " MP3 ",
-            },
+    const resolved = provider.resolveConfig?.({
+      ...context,
+      rawConfig: {
+        providers: {
+          deepinfra: {
+            apiKey: "sk-test",
+            baseUrl: `${baseUrl}/`,
+            modelId: `deepinfra/${model}`,
+            voiceId: voice,
+            speed: 1.1,
+            responseFormat: " MP3 ",
           },
         },
-      }),
-    ).toEqual({
+      },
+    });
+    expect(resolved).toEqual({
       apiKey: "sk-test",
       baseUrl,
       model,
@@ -73,8 +71,7 @@ describe("deepinfra speech provider", () => {
       release,
     });
 
-    const provider = buildDeepInfraSpeechProvider();
-    const result = await provider.synthesize({
+    const result = await buildDeepInfraSpeechProvider().synthesize({
       text: "hello",
       cfg: {
         models: { providers: { deepinfra: { apiKey: "sk-deepinfra", baseUrl: `${baseUrl}/` } } },
@@ -84,29 +81,10 @@ describe("deepinfra speech provider", () => {
       timeoutMs: 12_345,
     });
 
-    expect(http.resolveProviderHttpRequestConfig).toHaveBeenCalledWith(
-      expect.objectContaining({
-        provider: "deepinfra",
-        capability: "audio",
-        transport: "http",
-        defaultBaseUrl: baseUrl,
-        allowPrivateNetwork: false,
-      }),
-    );
-    expect(http.postJsonRequest).toHaveBeenCalledOnce();
-    const postRequest = requireFirstPostJsonRequest(
-      http.postJsonRequest,
-      "DeepInfra speech request",
-    );
-    const postRequestHeaders = Reflect.get(postRequest ?? {}, "headers");
-    expect(postRequestHeaders).toBeInstanceOf(Headers);
-    expect(Object.fromEntries((postRequestHeaders as Headers).entries())).toEqual({
-      authorization: "Bearer sk-deepinfra",
-      "content-type": "application/json",
-    });
-    expect(postRequest).toEqual({
-      url: `${baseUrl}/audio/speech`,
-      headers: postRequestHeaders,
+    expectRequestConfig(http.resolveProviderHttpRequestConfig, "audio");
+    expectMediaRequest(http.postJsonRequest, {
+      path: "/audio/speech",
+      apiKey: "sk-deepinfra",
       timeoutMs: 12_345,
       body: {
         model,
@@ -115,27 +93,20 @@ describe("deepinfra speech provider", () => {
         response_format: "mp3",
         speed: 1.2,
       },
-      fetchFn: fetch,
-      allowPrivateNetwork: false,
-      dispatcherPolicy: undefined,
     });
     expect(result.audioBuffer).toEqual(Buffer.from([1, 2, 3]));
-    expect(result.outputFormat).toBe("mp3");
-    expect(result.fileExtension).toBe(".mp3");
-    expect(result.voiceCompatible).toBe(true);
+    expect(result).toMatchObject({
+      outputFormat: "mp3",
+      fileExtension: ".mp3",
+      voiceCompatible: true,
+    });
     expect(release).toHaveBeenCalledOnce();
   });
 
   it("uses DEEPINFRA_API_KEY when provider config omits apiKey", () => {
     vi.stubEnv("DEEPINFRA_API_KEY", "sk-env");
-    const provider = buildDeepInfraSpeechProvider();
-
-    expect(
-      provider.isConfigured({
-        cfg: {} as never,
-        providerConfig: {},
-        timeoutMs: 30_000,
-      }),
-    ).toBe(true);
+    expect(buildDeepInfraSpeechProvider().isConfigured({ ...context, providerConfig: {} })).toBe(
+      true,
+    );
   });
 });
