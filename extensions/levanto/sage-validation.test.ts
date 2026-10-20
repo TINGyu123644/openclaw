@@ -54,30 +54,17 @@ const scaleResult = {
   probabilities: [0, 0.01, 0.12, 0.84, 0.03].map((probability, level) => ({ level, probability })),
 };
 
-it.each(["yes", "no", null])(
-  "preserves %s and P(yes), not confidence in the chosen answer",
-  (answer) => {
-    const value = response(yesno, { answer, probability: 0.03 });
-    expect(parseSageResponse(value, yesno, "doc")).toBe(value);
-  },
-);
-it("preserves categorical option estimates and native abstention", () => {
-  const value = response(choice, choiceResult("a", 0.7));
-  expect(parseSageResponse(value, choice, "doc")).toBe(value);
-  const abstention = response(choice, choiceResult(null, null, 0.49, 0.51));
-  expect(parseSageResponse(abstention, choice, "doc")).toBe(abstention);
-  const nullableSelected = response(choice, choiceResult("a", null));
-  expect(parseSageResponse(nullableSelected, choice, "doc")).toBe(nullableSelected);
-});
-it("preserves fractional scale, native sort confidence and text tag abstention", () => {
-  for (const [q, c, r] of [
-    [scale, "doc", scaleResult],
-    [sort, list, { sorted: ["b", "a"], confidence: null }],
-    [tags, "doc", { tags: [tag("b", 0.8, true), tag("a", 0.49, null)] }],
-  ] as const) {
-    const v = response(q, r);
-    expect(parseSageResponse(v, q, c)).toBe(v);
-  }
+it.each([
+  ...["yes", "no", null].map((answer) => [yesno, "doc", { answer, probability: 0.03 }] as const),
+  [choice, "doc", choiceResult("a", 0.7)],
+  [choice, "doc", choiceResult(null, null, 0.49, 0.51)],
+  [choice, "doc", choiceResult("a", null)],
+  [scale, "doc", scaleResult],
+  [sort, list, { sorted: ["b", "a"], confidence: null }],
+  [tags, "doc", { tags: [tag("b", 0.8, true), tag("a", 0.49, null)] }],
+] as const)("preserves native estimates and abstention %#", (q, content, result) => {
+  const value = response(q, result);
+  expect(parseSageResponse(value, q, content)).toBe(value);
 });
 it.each([
   [yesno, { answer: true, probability: 0.8 }],
