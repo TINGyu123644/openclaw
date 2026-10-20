@@ -1,5 +1,5 @@
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const lanceMocks = vi.hoisted(() => ({
   countRows: vi.fn(async () => 1),
@@ -30,14 +30,17 @@ vi.mock("./lancedb-runtime.js", () => ({
 
 import { MemoryDB } from "./lancedb-store.js";
 
+let db: MemoryDB;
+const memoryId = "890e1fae-1234-4678-abcd-ef0123456789";
+const query = () => db.query("main", { columns: ["id"] });
 beforeEach(() => {
   vi.clearAllMocks();
+  db = new MemoryDB("/unused", 3);
 });
+afterEach(() => db.close());
 
 describe("MemoryDB delete receipts", () => {
   test("uses LanceDB's deleted-row count as the authoritative receipt", async () => {
-    const db = new MemoryDB("/unused", 3);
-    const memoryId = "890e1fae-1234-4678-abcd-ef0123456789";
     lanceMocks.deleteRows
       .mockResolvedValueOnce({ numDeletedRows: 0, version: 1 })
       .mockResolvedValueOnce({ numDeletedRows: 1, version: 2 })
@@ -48,59 +51,47 @@ describe("MemoryDB delete receipts", () => {
     await expect(db.delete("main", memoryId)).rejects.toThrow("delete unavailable");
     expect(lanceMocks.countRows).not.toHaveBeenCalled();
     expect(lanceMocks.deleteRows).toHaveBeenCalledTimes(3);
-    db.close();
   });
 
   test.each(["search", "list", "query", "delete", "store"] as const)(
     "%s propagates a refresh failure before reading or changing stale data",
     async (operation) => {
-      const db = new MemoryDB("/unused", 3);
-      try {
-        await db.query("main", { columns: ["id"] });
-        lanceMocks.queryRows.mockClear();
-        lanceMocks.checkoutLatest.mockRejectedValueOnce(new Error("refresh unavailable"));
-        const operations = {
-          search: () => db.search("main", [1, 0, 0]),
-          list: () => db.list("main"),
-          query: () => db.query("main", { columns: ["id"] }),
-          delete: () => db.delete("main", "890e1fae-1234-4678-abcd-ef0123456789"),
-          store: () =>
-            db.store("main", {
-              text: "new memory",
-              vector: [1, 0, 0],
-              importance: 0.5,
-              category: "fact",
-            }),
-        };
-        const result = operations[operation]();
-        await expect(result).rejects.toThrow("refresh unavailable");
-        expect(lanceMocks.queryRows).not.toHaveBeenCalled();
-        expect(lanceMocks.deleteRows).not.toHaveBeenCalled();
-        await expect(db.query("main", { columns: ["id"] })).resolves.toEqual([{ id: "known" }]);
-      } finally {
-        db.close();
-      }
+      await query();
+      lanceMocks.queryRows.mockClear();
+      lanceMocks.checkoutLatest.mockRejectedValueOnce(new Error("refresh unavailable"));
+      const operations = {
+        search: () => db.search("main", [1, 0, 0]),
+        list: () => db.list("main"),
+        query,
+        delete: () => db.delete("main", memoryId),
+        store: () =>
+          db.store("main", {
+            text: "new memory",
+            vector: [1, 0, 0],
+            importance: 0.5,
+            category: "fact",
+          }),
+      };
+      await expect(operations[operation]()).rejects.toThrow("refresh unavailable");
+      expect(lanceMocks.queryRows).not.toHaveBeenCalled();
+      expect(lanceMocks.deleteRows).not.toHaveBeenCalled();
+      await expect(query()).resolves.toEqual([{ id: "known" }]);
     },
   );
 
   test("pending initialization callers share one table opening without extra refresh", async () => {
     const schema = createDeferred<{ fields: { name: string }[] }>();
     lanceMocks.schema.mockReturnValueOnce(schema.promise);
-    const db = new MemoryDB("/unused", 3);
-    try {
-      const first = db.query("main", { columns: ["id"] });
-      const second = db.query("main", { columns: ["id"] });
-      schema.resolve({ fields: [{ name: "agentId" }] });
-      await expect(Promise.all([first, second])).resolves.toEqual([
-        [{ id: "known" }],
-        [{ id: "known" }],
-      ]);
-      expect(lanceMocks.schema).toHaveBeenCalledTimes(1);
-      expect(lanceMocks.checkoutLatest).not.toHaveBeenCalled();
-      await expect(db.query("main", { columns: ["id"] })).resolves.toEqual([{ id: "known" }]);
-      expect(lanceMocks.checkoutLatest).toHaveBeenCalledTimes(1);
-    } finally {
-      db.close();
-    }
+    const first = query();
+    const second = query();
+    schema.resolve({ fields: [{ name: "agentId" }] });
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      [{ id: "known" }],
+      [{ id: "known" }],
+    ]);
+    expect(lanceMocks.schema).toHaveBeenCalledTimes(1);
+    expect(lanceMocks.checkoutLatest).not.toHaveBeenCalled();
+    await expect(query()).resolves.toEqual([{ id: "known" }]);
+    expect(lanceMocks.checkoutLatest).toHaveBeenCalledTimes(1);
   });
 });

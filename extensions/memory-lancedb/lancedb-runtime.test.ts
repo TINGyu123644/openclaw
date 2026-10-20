@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, assert, describe, expect, test, vi } from "vitest";
 
 type LoaderModule = typeof import("./lancedb-runtime.js");
 
@@ -12,8 +12,7 @@ async function loadRuntimeForHost(platform: NodeJS.Platform, arch: NodeJS.Archit
   try {
     Object.defineProperty(process, "platform", { ...platformDescriptor, value: platform });
     Object.defineProperty(process, "arch", { ...archDescriptor, value: arch });
-    // The loader captures host identity when its module is loaded. Restore the
-    // real process before requesting the mocked native dependency or running assertions.
+    // Capture the synthetic host only during module load.
     return await vi.importActual<LoaderModule>("./lancedb-runtime.js");
   } finally {
     Object.defineProperty(process, "platform", platformDescriptor);
@@ -21,25 +20,12 @@ async function loadRuntimeForHost(platform: NodeJS.Platform, arch: NodeJS.Archit
   }
 }
 
-async function rejectedLoad(load: () => Promise<unknown>): Promise<unknown> {
-  try {
-    await load();
-  } catch (error) {
-    return error;
-  }
-  throw new Error("Expected the dependency load to reject");
-}
-
-function expectDependencyCause(error: unknown, dependencyFailure: Error) {
-  // Vitest wraps a throwing manual module factory once; the product must keep
-  // that import failure as cause instead of replacing or flattening it.
-  if (!error || typeof error !== "object" || !("cause" in error)) {
-    throw new Error("Expected the loader failure to retain its import cause");
-  }
+function expectFailure(error: unknown, message: string, dependencyFailure: Error) {
+  expect(error).toHaveProperty("message", expect.stringContaining(message));
+  // Preserve both the product error and Vitest's module-factory wrapper.
+  assert(error && typeof error === "object" && "cause" in error);
   const importFailure = error.cause;
-  if (!importFailure || typeof importFailure !== "object" || !("cause" in importFailure)) {
-    throw new Error("Expected the dependency import failure as cause");
-  }
+  assert(importFailure && typeof importFailure === "object" && "cause" in importFailure);
   expect(importFailure.cause).toBe(dependencyFailure);
 }
 
@@ -65,8 +51,7 @@ describe("lancedb runtime loader", () => {
     const replacement = await import("@lancedb/lancedb");
     expect(replacement.connect).toBe(replacementConnect);
     expect(replacement).not.toBe(first);
-    // The dependency replacement witness above makes this an owner-cache
-    // assertion, rather than merely observing Vite's own module cache.
+    // Replacement distinguishes the owner cache from Vite's module cache.
     expect((await loadLanceDbModule()) === first).toBe(true);
   });
 
@@ -76,12 +61,12 @@ describe("lancedb runtime loader", () => {
       throw dependencyFailure;
     });
     const { loadLanceDbModule } = await loadRuntimeForHost("darwin", "x64");
-    const error = await rejectedLoad(loadLanceDbModule);
-    expect(error).toHaveProperty(
-      "message",
-      expect.stringContaining("memory-lancedb: LanceDB runtime is unavailable on darwin-x64."),
+    const error = await loadLanceDbModule().catch((cause: unknown) => cause);
+    expectFailure(
+      error,
+      "memory-lancedb: LanceDB runtime is unavailable on darwin-x64.",
+      dependencyFailure,
     );
-    expectDependencyCause(error, dependencyFailure);
   });
 
   test("reports missing package dependencies and clears the cached failure so later calls can retry", async () => {
@@ -90,21 +75,18 @@ describe("lancedb runtime loader", () => {
       throw dependencyFailure;
     });
     const { loadLanceDbModule } = await loadRuntimeForHost("linux", "x64");
-    const error = await rejectedLoad(loadLanceDbModule);
-    expect(error).toHaveProperty(
-      "message",
-      expect.stringContaining(
-        "memory-lancedb: bundled @lancedb/lancedb dependency is unavailable.",
-      ),
+    const error = await loadLanceDbModule().catch((cause: unknown) => cause);
+    expectFailure(
+      error,
+      "memory-lancedb: bundled @lancedb/lancedb dependency is unavailable.",
+      dependencyFailure,
     );
-    expectDependencyCause(error, dependencyFailure);
 
     const connect = vi.fn();
     vi.doMock("@lancedb/lancedb", () => ({ connect }));
     const available = await import("@lancedb/lancedb");
     expect(available.connect).toBe(connect);
-    // Only the dependency changed; the same SUT closure must discard its failed
-    // load and recover. Resetting the SUT here would mask a sticky rejection.
+    // Do not reset the SUT: that would mask a sticky rejection.
     expect(await loadLanceDbModule()).toBe(available);
   });
 });

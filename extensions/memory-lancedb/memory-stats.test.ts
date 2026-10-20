@@ -83,7 +83,8 @@ describe("memory-lancedb statistics", () => {
   it("runs the registered stats command outside the shared database and keeps agent scope", async () => {
     const program = new Command();
     const embed = vi.fn();
-    const registerCli = vi.fn();
+    const registerCli = (register: (context: { program: Command }) => void) =>
+      register({ program });
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     registerMemoryCli(
       { registerCli } as unknown as OpenClawPluginApi,
@@ -101,14 +102,6 @@ describe("memory-lancedb statistics", () => {
       }),
       { dbPath: "populated", storageOptions: { fixture: "stdin-only" } },
     );
-    const registrar = registerCli.mock.calls[0]?.[0] as
-      | ((context: { program: Command }) => void)
-      | undefined;
-    if (!registrar) {
-      throw new Error("Expected the memory CLI registrar");
-    }
-    registrar({ program });
-
     await program.parseAsync(["node", "openclaw", "ltm", "stats", "--agent", "main's"]);
 
     expect(log).toHaveBeenCalledWith("Total memories: 7");
