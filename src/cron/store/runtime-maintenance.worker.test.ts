@@ -7,6 +7,14 @@ import { requireNativeSqliteDatabase } from "../../test-utils/native-sqlite.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { maintainCronRunHistoryInWorker } from "./runtime-maintenance.worker.js";
 
+const day = 24 * 60 * 60_000;
+const nowMs = 10 * day;
+function maintain(database: ReturnType<typeof openOpenClawStateDatabase>, stateDir: string) {
+  return runWithSqliteWorkerStateContext({ environment: { OPENCLAW_STATE_DIR: stateDir } }, () =>
+    maintainCronRunHistoryInWorker(database, { snapshot: { nowMs, protectedJobIds: [] } }),
+  );
+}
+
 it.each(["empty", "retained", "expired"] as const)(
   "does not invalidate shared readers unless history maintenance changes rows: %s",
   async (history) => {
@@ -14,8 +22,6 @@ it.each(["empty", "retained", "expired"] as const)(
       { layout: "state-only", prefix: "cron-history-no-recovery-" },
       async (state) => {
         const database = openOpenClawStateDatabase();
-        const day = 24 * 60 * 60_000;
-        const nowMs = 10 * day;
         if (history !== "empty") {
           const endedAt = nowMs - (history === "expired" ? 8 : 1) * day;
           database.db
@@ -41,16 +47,7 @@ it.each(["empty", "retained", "expired"] as const)(
           },
         );
         try {
-          const result = runWithSqliteWorkerStateContext(
-            { environment: { OPENCLAW_STATE_DIR: state.stateDir } },
-            () =>
-              maintainCronRunHistoryInWorker(database, {
-                snapshot: {
-                  nowMs,
-                  protectedJobIds: [],
-                },
-              }),
-          );
+          const result = maintain(database, state.stateDir);
           expect(result).toEqual({
             outcome: {
               reconciled: 0,
@@ -84,92 +81,57 @@ it("plans without retained payloads and reconciles with the full payloads of aff
     { layout: "state-only", prefix: "cron-history-payload-bounded-" },
     async (state) => {
       const database = openOpenClawStateDatabase();
-      const day = 24 * 60 * 60_000;
-      const nowMs = 10 * day;
       const startedAt = nowMs - day;
       const detail = (fields: Record<string, unknown>) =>
         JSON.stringify({ kind: "cron-run", storeKey: "store", status: "ok", ...fields });
-      const insert = database.db.prepare(
+      const statement = database.db.prepare(
         "INSERT INTO task_runs (task_id, runtime, source_id, run_id, owner_key, scope_kind, task, delivery_status, notify_policy, created_at, started_at, ended_at, last_event_at, status, terminal_summary, detail_json) VALUES (?, 'cron', ?, ?, '', 'system', 'job', 'not_applicable', 'silent', ?, ?, ?, ?, ?, ?, ?)",
       );
+      const insert = (
+        id: string,
+        jobId: string,
+        runId: string | null,
+        status: string,
+        summary: string | null,
+        payload: string,
+        createdAt = startedAt,
+      ) =>
+        statement.run(
+          id,
+          jobId,
+          runId,
+          createdAt,
+          startedAt,
+          status === "running" ? null : startedAt + 1,
+          status === "running" ? startedAt : null,
+          status,
+          summary,
+          payload,
+        );
       const retainedPayload = "x".repeat(2_000_000);
       const outcomeDetail = detail({ summary: "done", output: "y".repeat(1_000) });
-      insert.run(
+      insert(
         "retained",
         "other",
         "run-0",
-        startedAt,
-        startedAt,
-        startedAt + 1,
-        null,
         "succeeded",
         retainedPayload,
         detail({ output: retainedPayload }),
       );
       // The finished outcome precedes its stale active marker, so recovery adopts its payload.
-      insert.run(
-        "outcome",
-        "job",
-        "run-1",
-        startedAt,
-        startedAt,
-        startedAt + 1,
-        null,
-        "succeeded",
-        "done",
-        outcomeDetail,
-      );
-      insert.run(
-        "marker",
-        "job",
-        "run-1",
-        startedAt + 2,
-        startedAt,
-        null,
-        startedAt,
-        "running",
-        null,
-        detail({ marker: true }),
-      );
+      insert("outcome", "job", "run-1", "succeeded", "done", outcomeDetail);
+      insert("marker", "job", "run-1", "running", null, detail({ marker: true }), startedAt + 2);
       // Without a recovery candidate a stale active row becomes lost and keeps its own payload.
       const staleDetail = detail({ note: "partial output" });
-      insert.run(
-        "stale",
-        "job-2",
-        "run-2",
-        startedAt,
-        startedAt,
-        null,
-        startedAt,
-        "running",
-        "partial",
-        staleDetail,
-      );
-      insert.run(
-        "unkeyed",
-        "job-3",
-        null,
-        startedAt,
-        startedAt,
-        null,
-        startedAt,
-        "running",
-        "unkeyed partial",
-        staleDetail,
-      );
+      insert("stale", "job-2", "run-2", "running", "partial", staleDetail);
+      insert("unkeyed", "job-3", null, "running", "unkeyed partial", staleDetail);
       const reads = trackSqliteStatementExecutions(
         requireNativeSqliteDatabase(database.db),
         ["history"],
         (sql) => (/^select\b/i.test(sql) && sql.includes('from "task_runs"') ? "history" : null),
       );
       try {
-        const result = runWithSqliteWorkerStateContext(
-          { environment: { OPENCLAW_STATE_DIR: state.stateDir } },
-          () =>
-            maintainCronRunHistoryInWorker(database, {
-              snapshot: { nowMs, protectedJobIds: [] },
-            }),
-        );
+        const result = maintain(database, state.stateDir);
         expect(result.outcome).toMatchObject({ reconciled: 3, pruned: 0 });
         // Planning plus one payload read for the reconciled runs; the retained payload stays put.
         expect(reads.textBytes.history).toBeLessThan(retainedPayload.length / 10);

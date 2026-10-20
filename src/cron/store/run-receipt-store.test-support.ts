@@ -21,15 +21,10 @@ export function inspectActiveCronRunReceipt(params: { storePath: string; jobId: 
 
 export function makeCronRecoveryJob(id: string, startedAtMs: number): CronJob {
   return {
-    id,
-    agentId: "alpha",
-    name: id,
-    enabled: true,
+    ...makeCronReceiptJob(id),
     createdAtMs: startedAtMs - 1,
     updatedAtMs: startedAtMs - 1,
     schedule: { kind: "every", everyMs: 60_000, anchorMs: startedAtMs },
-    sessionTarget: "isolated",
-    wakeMode: "next-heartbeat",
     payload: { kind: "command", argv: ["true"] },
     state: { runningAtMs: startedAtMs, nextRunAtMs: startedAtMs },
   };
@@ -59,10 +54,7 @@ export function claimCronRunReceiptForTest(storePath: string, job: CronJob, star
     startedAtMs,
   });
   return runOpenClawStateWriteTransaction(({ db }) =>
-    claimCronRunReceiptInDatabaseForTest({
-      database: db,
-      prepared,
-    }),
+    claimCronRunReceiptInDatabaseForTest({ database: db, prepared }),
   );
 }
 

@@ -38,6 +38,7 @@ it("commits execution, delivery, and history once despite an owner edit and a du
     const edited = { ...job, name: "edited while running", agentId: "replacement-agent" };
     await saveCronStore(storePath, { version: 1, jobs: [edited] });
     const database = openOpenClawStateDatabase();
+    const row = (sql: string, id: string) => database.db.prepare(sql).get(id);
     // Clock skew can make the pending result older than the retained history.
     // Finalization must protect its stored marker even after clearing the live job.
     const seedHistory = database.db.prepare(`
@@ -85,16 +86,12 @@ it("commits execution, delivery, and history once despite an owner edit and a du
       BEGIN SELECT RAISE(ABORT, 'synthetic history failure'); END
     `);
     expect(() => finalize("ok")).toThrow("synthetic history failure");
-    expect(
-      database.db
-        .prepare("SELECT status FROM cron_run_receipts WHERE receipt_id = ?")
-        .get(receipt.receiptId),
-    ).toEqual({ status: "running" });
-    expect(
-      database.db
-        .prepare("SELECT COUNT(*) AS count FROM task_runs WHERE source_id = ?")
-        .get(job.id),
-    ).toEqual({ count: 0 });
+    const receiptStatus = () =>
+      row("SELECT status FROM cron_run_receipts WHERE receipt_id = ?", receipt.receiptId);
+    expect(receiptStatus()).toEqual({ status: "running" });
+    expect(row("SELECT COUNT(*) AS count FROM task_runs WHERE source_id = ?", job.id)).toEqual({
+      count: 0,
+    });
     expect((await loadCronStore(storePath)).jobs[0]?.state.runningReceiptId).toBe(
       receipt.receiptId,
     );
@@ -106,16 +103,10 @@ it("commits execution, delivery, and history once despite an owner edit and a du
       agentId: edited.agentId,
       state: { lastRunStatus: "ok", lastDelivered: true, lastDeliveryStatus: "delivered" },
     });
-    expect(
-      database.db
-        .prepare("SELECT status FROM cron_run_receipts WHERE receipt_id = ?")
-        .get(receipt.receiptId),
-    ).toEqual({ status: "ok" });
-    expect(
-      database.db
-        .prepare("SELECT COUNT(*) AS count FROM cron_run_receipts WHERE job_id = ?")
-        .get(job.id),
-    ).toEqual({ count: 64 });
+    expect(receiptStatus()).toEqual({ status: "ok" });
+    expect(row("SELECT COUNT(*) AS count FROM cron_run_receipts WHERE job_id = ?", job.id)).toEqual(
+      { count: 64 },
+    );
     expect(
       database.db.prepare("SELECT status, ended_at FROM task_runs WHERE source_id = ?").all(job.id),
     ).toEqual([{ status: "succeeded", ended_at: now + 10 }]);

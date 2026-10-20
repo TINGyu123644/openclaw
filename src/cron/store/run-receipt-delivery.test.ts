@@ -16,9 +16,13 @@ import {
 
 const { logger, makeStorePath } = setupCronServiceSuite({ prefix: "cron-delivery-commit-" });
 
-it.each(["commit", "retired", "reply-lost"] as const)(
+it.each([
+  ["commit", "started", 1, "committed"],
+  ["retired", "not-started", 0, "not-committed"],
+  ["reply-lost", "started", 0, "unknown"],
+] as const)(
   "publishes delivery admission only after a successful worker reply: %s",
-  async (outcome) => {
+  async (outcome, phase, publications, settlement) => {
     const { storePath } = await makeStorePath();
     const job = makeCronReceiptJob("delivery-commit");
     await writeCronStoreSnapshot({ storePath, jobs: [job] });
@@ -52,15 +56,9 @@ it.each(["commit", "retired", "reply-lost"] as const)(
         await expect(attempt).rejects.toBeInstanceOf(Error);
       }
       await reply?.waitForExit();
-      expect(readPhase()).toBe(outcome === "retired" ? "not-started" : "started");
-      expect(published).toHaveBeenCalledTimes(outcome === "commit" ? 1 : 0);
-      expect(settled).toHaveBeenCalledWith(
-        outcome === "reply-lost"
-          ? "unknown"
-          : outcome === "retired"
-            ? "not-committed"
-            : "committed",
-      );
+      expect(readPhase()).toBe(phase);
+      expect(published).toHaveBeenCalledTimes(publications);
+      expect(settled).toHaveBeenCalledWith(settlement);
       if (reply) {
         expect(reply.wasDropped()).toBe(true);
         expect(reply.attempts).toEqual(["cron.markDeliveryStarted"]);

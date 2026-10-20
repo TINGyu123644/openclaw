@@ -12,6 +12,26 @@ import { noteCronJobsStoreCommit, saveCronJobsStore, saveCronJobsStoreChanges } 
 import type { CronStoreFile } from "../types.js";
 import { prepareCronJobNameResolver } from "./job-name.js";
 
+function namedStore(name: string): CronStoreFile {
+  return {
+    version: 1,
+    jobs: [
+      {
+        id: "report",
+        name,
+        enabled: false,
+        createdAtMs: 1,
+        updatedAtMs: 1,
+        schedule: { kind: "every", everyMs: 60_000 },
+        sessionTarget: "main",
+        wakeMode: "next-heartbeat",
+        payload: { kind: "systemEvent", text: "Synthetic report" },
+        state: {},
+      },
+    ],
+  };
+}
+
 it("reads absent cron metadata in legacy shared state without repairing it", async () => {
   await withOpenClawTestState({ label: "cron-name-legacy" }, async (fixture) => {
     const databasePath = resolveOpenClawStateSqlitePath(fixture.env);
@@ -41,23 +61,7 @@ it("reads absent cron metadata in legacy shared state without repairing it", asy
 it("retains committed names across saves without caller SQL and refuses invalidated generations", async () => {
   await withOpenClawTestState({ label: "cron-name-publication" }, async (fixture) => {
     const storePath = fixture.statePath("cron", "jobs.json");
-    const store: CronStoreFile = {
-      version: 1,
-      jobs: [
-        {
-          id: "report",
-          name: "Original",
-          enabled: false,
-          createdAtMs: 1,
-          updatedAtMs: 1,
-          schedule: { kind: "every", everyMs: 60_000 },
-          sessionTarget: "main",
-          wakeMode: "next-heartbeat",
-          payload: { kind: "systemEvent", text: "Synthetic report" },
-          state: {},
-        },
-      ],
-    };
+    const store = namedStore("Original");
     await saveCronJobsStore(storePath, store);
     const sql = observeMainThreadSql();
     let resolveName: Awaited<ReturnType<typeof prepareCronJobNameResolver>>;
@@ -114,23 +118,7 @@ it("does not overwrite committed names with a delayed worker read", async () => 
         pending,
         "Name read did not reach publication",
       );
-      await saveCronJobsStore(storePath, {
-        version: 1,
-        jobs: [
-          {
-            id: "report",
-            name: "Committed",
-            enabled: false,
-            createdAtMs: 1,
-            updatedAtMs: 1,
-            schedule: { kind: "every", everyMs: 60_000 },
-            sessionTarget: "main",
-            wakeMode: "next-heartbeat",
-            payload: { kind: "systemEvent", text: "Synthetic report" },
-            state: {},
-          },
-        ],
-      });
+      await saveCronJobsStore(storePath, namedStore("Committed"));
       release.resolve();
       expect((await pending)("report")).toBe("Committed");
     } finally {
