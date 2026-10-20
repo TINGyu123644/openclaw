@@ -1,8 +1,7 @@
-/** Tests runtime isolation for manifest-owned plugin secrets. */
 import fs from "node:fs/promises";
 import path from "node:path";
 import { assertPluginCapabilitySecretAvailable } from "openclaw/plugin-sdk/secret-input-runtime";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { activateSecretsRuntimeSnapshotState } from "./runtime-state.js";
 import { asConfig, setupSecretsRuntimeSnapshotTestHooks } from "./runtime.test-support.js";
@@ -18,17 +17,11 @@ const { prepareSecretsRuntimeSnapshot } = setupSecretsRuntimeSnapshotTestHooks()
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 function tavilyToolSecretConfig(commandPath: string) {
+  const config = { webSearch: { apiKey: TAVILY_TOOL_KEY_REF } };
   return asConfig({
     agents: { entries: { main: {} } },
     tools: { web: { search: { enabled: false } } },
-    plugins: {
-      entries: {
-        tavily: {
-          enabled: true,
-          config: { webSearch: { apiKey: TAVILY_TOOL_KEY_REF } },
-        },
-      },
-    },
+    plugins: { entries: { tavily: { enabled: true, config } } },
     secrets: {
       providers: {
         "tavily-vault": {
@@ -92,37 +85,26 @@ function tavilyFixture(kind: string) {
   };
 }
 
-describe("plugin secret owners", () => {
-  it("isolates Tavily tools when their exec provider fails at cold start", async () => {
+it.each([false, true])(
+  "isolates a failed Tavily provider (previously active: %s)",
+  async (reload) => {
     if (process.platform === "win32") {
       return;
     }
-    const fixture = tavilyFixture("cold");
-    await fixture.writeProvider(false);
-    const snapshot = await fixture.prepare(true);
-
-    activateColdTavilyAndExpectUnavailable(snapshot);
-  });
-
-  it("does not retain a stale Tavily key when its exec provider fails on reload", async () => {
-    if (process.platform === "win32") {
-      return;
+    const fixture = tavilyFixture(reload ? "reload" : "cold");
+    if (reload) {
+      await fixture.writeProvider(true);
+      const active = await fixture.prepare();
+      activateSecretsRuntimeSnapshotState({
+        snapshot: active,
+        refreshContext: null,
+        refreshHandler: null,
+      });
+      expect(active.config.plugins?.entries?.tavily?.config).toMatchObject({
+        webSearch: { apiKey: "resolved-tavily-key" },
+      });
     }
-    const fixture = tavilyFixture("reload");
-    await fixture.writeProvider(true);
-    const active = await fixture.prepare();
-    activateSecretsRuntimeSnapshotState({
-      snapshot: active,
-      refreshContext: null,
-      refreshHandler: null,
-    });
-    expect(active.config.plugins?.entries?.tavily?.config).toMatchObject({
-      webSearch: { apiKey: "resolved-tavily-key" },
-    });
-
     await fixture.writeProvider(false);
-    const candidate = await fixture.prepare(true);
-
-    activateColdTavilyAndExpectUnavailable(candidate);
-  });
-});
+    activateColdTavilyAndExpectUnavailable(await fixture.prepare(true));
+  },
+);
