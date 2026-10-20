@@ -143,6 +143,10 @@ function harness(
   return { controller, gateway, context, request };
 }
 
+function text(root: ParentNode, selector: string) {
+  return root.querySelector(selector)?.textContent;
+}
+
 async function mount(controller: Systems) {
   const sidebar = renderSidebar({ controller })!;
   const mounted = mountSolid(() => [
@@ -169,22 +173,18 @@ describe("Systems workspace", () => {
       backups,
     );
     const { page } = await mount(controller);
-    expect(page.querySelector(".systems-page-header h1")?.textContent).toBe("Systems");
-    expect(page.querySelector(".systems-heading h2")?.textContent).toBe("Select a machine");
+    expect(text(page, ".systems-page-header h1")).toBe("Systems");
+    expect(text(page, ".systems-heading h2")).toBe("Select a machine");
     expect(page.querySelectorAll(".systems-backups")).toHaveLength(1);
-    expect(page.querySelector(".systems-backups")?.textContent).toContain("Loading backups…");
+    expect(text(page, ".systems-backups")).toContain("Loading backups…");
     pending.reject(new Error("Backup history unavailable"));
     await pending.promise.catch(() => {});
     flush();
-    expect(page.querySelector('.systems-backups [role="alert"]')?.textContent).toContain(
-      "Backup history unavailable",
-    );
+    expect(text(page, '.systems-backups [role="alert"]')).toContain("Backup history unavailable");
     await controller.refreshBackups();
     flush();
-    expect(page.querySelector(".systems-backups")?.textContent).toContain("No backups recorded —");
-    expect(page.querySelector(".systems-backups code")?.textContent).toBe(
-      "openclaw backup enable --to <location>",
-    );
+    expect(text(page, ".systems-backups")).toContain("No backups recorded —");
+    expect(text(page, ".systems-backups code")).toBe("openclaw backup enable --to <location>");
     const backupReads = () => request.mock.calls.filter(([method]) => method === "backup.status");
     expect(backupReads()).toHaveLength(2);
     await vi.advanceTimersByTimeAsync(15_000);
@@ -270,26 +270,20 @@ describe("Systems workspace", () => {
         ...namespaceTargets,
         ...gitTargets,
       ],
-      schedules: [
-        {
-          id: "scheduled",
-          mode: "offsite",
-          target: "offsite",
-          namespace: "gateway",
-          enabled: true,
-          everyMs: 86_400_000,
-          nextRunAtMs: now + 3_600_000,
-        },
-        {
-          id: "host-b-schedule",
-          mode: "offsite",
-          target: "offsite",
-          namespace: "host-b",
-          enabled: true,
-          everyMs: 86_400_000,
-          nextRunAtMs: now + 3_600_000,
-        },
-      ],
+      schedules: (
+        [
+          ["scheduled", "gateway"],
+          ["host-b-schedule", "host-b"],
+        ] as const
+      ).map(([id, namespace]) => ({
+        id,
+        namespace,
+        mode: "offsite" as const,
+        target: "offsite",
+        enabled: true,
+        everyMs: 86_400_000,
+        nextRunAtMs: now + 3_600_000,
+      })),
       locations: [
         {
           name: "offsite",
@@ -312,15 +306,13 @@ describe("Systems workspace", () => {
     for (const row of rows.slice(2, 4)) {
       expect(row.textContent).not.toContain("Next run:");
     }
-    expect(section.querySelector(".systems-backups__hint")?.textContent).toContain("Next run:");
+    expect(text(section, ".systems-backups__hint")).toContain("Next run:");
     for (const [index, target] of gitTargets.entries()) {
       const backup = rows[index + 4]!;
       expect(backup.getAttribute("data-status")).toBe("failed");
-      expect(backup.querySelector(".systems-backup__state")?.textContent?.trim()).toBe(
-        "Push failed",
-      );
+      expect(text(backup, ".systems-backup__state")?.trim()).toBe("Push failed");
       expect(backup.textContent).toMatch(/Last local success: .*ago/);
-      expect(backup.querySelector(".systems-backup__error")?.textContent).toBe(
+      expect(text(backup, ".systems-backup__error")).toBe(
         target.latest.error ??
           "Local backup succeeded, but pushing to the Git remote failed. Check the remote and retry.",
       );
@@ -363,7 +355,7 @@ describe("Systems workspace", () => {
     await pending.promise;
     flush();
     expect(controller.state.backups).toBeNull();
-    expect(page.querySelector(".systems-backups")?.textContent).not.toContain("old-host");
+    expect(text(page, ".systems-backups")).not.toContain("old-host");
   });
 
   it("defers hidden initial and event reads, preserving inventory until visible recovery", async () => {
@@ -453,7 +445,7 @@ describe("Systems workspace", () => {
     expect(enable.disabled).toBe(true);
     pending.reject(new Error("Desktop configuration could not be saved"));
     await waitForSolid(() =>
-      expect(mounted.container.querySelector('[role="alert"]')?.textContent).toContain(
+      expect(text(mounted.container, '[role="alert"]')).toContain(
         "Desktop configuration could not be saved",
       ),
     );
@@ -465,9 +457,7 @@ describe("Systems workspace", () => {
       { ...host, desktopSetup: { state: "ready" } },
     ]);
     const { page } = await mount(controller);
-    expect(page.querySelector(".systems-state button")?.textContent).toContain(
-      "Enable desktop access in OpenClaw",
-    );
+    expect(text(page, ".systems-state button")).toContain("Enable desktop access in OpenClaw");
     const request = vi.spyOn(context.gateway.snapshot.client!, "request");
     request.mockResolvedValueOnce({
       config: { desktop: { host: { enabled: true } } },
@@ -476,9 +466,7 @@ describe("Systems workspace", () => {
     });
     await context.runtimeConfig.refresh();
     await waitForSolid(() =>
-      expect(page.querySelector(".systems-state h2")?.textContent).toBe(
-        "Desktop access is enabled",
-      ),
+      expect(text(page, ".systems-state h2")).toBe("Desktop access is enabled"),
     );
     expect(page.querySelector(".systems-state button")).toBeNull();
 
@@ -489,9 +477,7 @@ describe("Systems workspace", () => {
     });
     await context.runtimeConfig.refresh();
     await waitForSolid(() =>
-      expect(page.querySelector(".systems-state button")?.textContent).toContain(
-        "Enable desktop access in OpenClaw",
-      ),
+      expect(text(page, ".systems-state button")).toContain("Enable desktop access in OpenClaw"),
     );
   });
 
@@ -594,7 +580,7 @@ describe("Systems workspace", () => {
     await choose("status:offline");
     expect(names()).toEqual(["Alpha laptop", "Delta laptop", "Retained worker"]);
     expect(counts()).toEqual(["2", "1"]);
-    expect(page.querySelector(".systems-heading h2")?.textContent).toBe("Zulu laptop");
+    expect(text(page, ".systems-heading h2")).toBe("Zulu laptop");
     expect(page.querySelector<HTMLSelectElement>(".systems-mobile-picker")?.value).toBe(offline.id);
 
     await choose("status:online");
@@ -602,7 +588,7 @@ describe("Systems workspace", () => {
     await search("  ALPHA  ");
     expect(names()).toEqual([]);
     expect(counts()).toEqual([]);
-    expect(sidebar.querySelector(".systems-sidebar__empty")?.textContent).toBe(
+    expect(text(sidebar, ".systems-sidebar__empty")).toBe(
       "No machines match your search or filters.",
     );
     await choose("status:all");
@@ -618,7 +604,7 @@ describe("Systems workspace", () => {
     await waitForSolid(() => expect(controller.loading()).toBe(false));
     await sidebar.updateComplete;
     expect(names()).toEqual(["Alpha laptop"]);
-    expect(page.querySelector(".systems-heading h2")?.textContent).toBe("Zulu laptop");
+    expect(text(page, ".systems-heading h2")).toBe("Zulu laptop");
     await search("");
     expect(names()).toEqual(["Alpha laptop", "Delta laptop", "Retained worker"]);
     await choose("status:all");
@@ -686,9 +672,7 @@ describe("Systems workspace", () => {
     clock.mockReturnValue(now + 15_000);
     request.mockResolvedValueOnce({ ...systemInfo, loadAverage: [2, 1, 0.5] });
     await controller.refreshTelemetry();
-    await waitForSolid(() =>
-      expect(page.querySelector(".sparkline-tile__value")?.textContent?.trim()).toBe("2.00"),
-    );
+    await waitForSolid(() => expect(text(page, ".sparkline-tile__value")?.trim()).toBe("2.00"));
     const points = () =>
       page.querySelector(".sparkline-tile__chart polyline")?.getAttribute("points")?.split(" ");
     expect(points()).toHaveLength(2);
@@ -699,7 +683,7 @@ describe("Systems workspace", () => {
     flush();
     expect(points()).toHaveLength(2);
     expect(page.querySelector('.systems-metrics[data-stale="true"]')).not.toBeNull();
-    expect(page.querySelector(".systems-sample-time")?.textContent).toContain("Last reported");
+    expect(text(page, ".systems-sample-time")).toContain("Last reported");
   });
 
   it("graphs genuine node reports, preserves per-machine history, and leaves gaps for missing metrics", async () => {
