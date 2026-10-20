@@ -44,14 +44,14 @@ describe("finalizeEmbeddedAttempt trajectory capture", () => {
     completed?: AssistantStopReason;
     yielded?: boolean;
   };
-  type TerminalCase = readonly [
-    name: string,
-    terminal: EmbeddedRunAttemptResult["terminal"],
-    currentStopReason: AssistantStopReason,
-    expectedStopReason: string | undefined,
-    expectedFinalStatus: "success" | "error" | "interrupted",
-    options: TerminalCaseOptions,
-  ];
+  type TerminalCase = {
+    name: string;
+    terminal: EmbeddedRunAttemptResult["terminal"];
+    currentStopReason: AssistantStopReason;
+    expectedStopReason: string | undefined;
+    expectedFinalStatus: "success" | "error" | "interrupted";
+    options: TerminalCaseOptions;
+  };
   const ok = { kind: "ok" } as const;
   const externalAbort = { kind: "aborted", source: "external" } as const;
   const yieldAbort = { kind: "aborted", source: "yield_cleanup" } as const;
@@ -59,34 +59,20 @@ describe("finalizeEmbeddedAttempt trajectory capture", () => {
   const yielded = { last: "aborted", completed: "stop", yielded: true } as const;
   const timeout = { kind: "timeout", phase: "prompt", source: "runtime" } as const;
 
-  it.each<TerminalCase>([
-    ["current over stale", ok, "stop", "stop", "success", { last: "aborted" }],
-    ["normal completion", ok, "length", "stop", "success", { completed: "stop" }],
-    // Visible fallback text makes a length stop a delivered partial reply.
-    ["length truncation with visible text", ok, "length", "length", "success", {}],
-    ["yield plus prompt timeout", timeout, "stop", undefined, "interrupted", yielded],
-    ["yield plus external abort", externalAbort, "stop", "aborted", "interrupted", yielded],
-    [
-      "external abort over prompt failure",
-      { ...externalAbort, failure },
-      "stop",
-      "aborted",
-      "interrupted",
-      {},
-    ],
-    ["partial provider error", ok, "error", "error", "error", { texts: ["x"] }],
-    [
-      "yield cleanup plus prompt failure",
-      { ...yieldAbort, failure },
-      "error",
-      undefined,
-      "error",
-      yielded,
-    ],
-    ["yield over completed assistant", yieldAbort, "length", "end_turn", "success", yielded],
-  ])(
-    "%s",
-    (_name, terminal, currentStopReason, expectedStopReason, expectedFinalStatus, options) => {
+  it.each<TerminalCase>`
+    name                                     | terminal                         | currentStopReason | expectedStopReason | expectedFinalStatus | options
+    ${"current over stale"}                  | ${ok}                            | ${"stop"}         | ${"stop"}          | ${"success"}        | ${{ last: "aborted" }}
+    ${"normal completion"}                   | ${ok}                            | ${"length"}       | ${"stop"}          | ${"success"}        | ${{ completed: "stop" }}
+    ${"length truncation with visible text"} | ${ok}                            | ${"length"}       | ${"length"}        | ${"success"}        | ${{}}
+    ${"yield plus prompt timeout"}           | ${timeout}                       | ${"stop"}         | ${undefined}       | ${"interrupted"}    | ${yielded}
+    ${"yield plus external abort"}           | ${externalAbort}                 | ${"stop"}         | ${"aborted"}       | ${"interrupted"}    | ${yielded}
+    ${"external abort over prompt failure"}  | ${{ ...externalAbort, failure }} | ${"stop"}         | ${"aborted"}       | ${"interrupted"}    | ${{}}
+    ${"partial provider error"}              | ${ok}                            | ${"error"}        | ${"error"}         | ${"error"}          | ${{ texts: ["x"] }}
+    ${"yield cleanup plus prompt failure"}   | ${{ ...yieldAbort, failure }}    | ${"error"}        | ${undefined}       | ${"error"}          | ${yielded}
+    ${"yield over completed assistant"}      | ${yieldAbort}                    | ${"length"}       | ${"end_turn"}      | ${"success"}        | ${yielded}
+  `(
+    "$name",
+    ({ terminal, currentStopReason, expectedStopReason, expectedFinalStatus, options }) => {
       const events = captureTrajectory({
         terminal,
         assistantTexts: options.texts ?? [],

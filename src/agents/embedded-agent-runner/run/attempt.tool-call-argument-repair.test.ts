@@ -71,54 +71,21 @@ describe("malformed tool-call argument repair", () => {
     expect(result).toMatchObject({ content: [{ arguments: { text: "John Smith" } }] });
   });
 
-  it.each<[string, string, string | string[], Record<string, unknown>]>([
-    [
-      "fragmented JSON with junk",
-      "read",
-      [".functions.read:0 ", '{"path":"/tmp/report.txt"', "}x"],
-      { path: "/tmp/report.txt" },
-    ],
-    [
-      "smart-quoted edit arrays",
-      "edit",
-      String.raw` {“path”:“notes/报告.md”,“edits”:[{“oldText”:“旧的 **草稿**”,“newText”:“更新 \"草稿\"\nnext”},{“oldText”:“tail”,“newText”:“done”}]}`,
-      {
-        path: "notes/报告.md",
-        edits: [
-          { oldText: "旧的 **草稿**", newText: '更新 "草稿"\nnext' },
-          { oldText: "tail", newText: "done" },
-        ],
-      },
-    ],
-    [
-      "case-varied read options",
-      "Read",
-      "{“path”:“safe.txt”,“offset”:5,“limit”:20}",
-      { path: "safe.txt", offset: 5, limit: 20 },
-    ],
-    [
-      "structured name beats prefix",
-      "grep",
-      [
-        ".functions.read:0 ",
-        String.raw` {“pattern”:“Use ”, “limit”: “bar” in prose”,“path”:“safe.txt”}`,
-      ],
-      { pattern: "Use ”, “limit”: “bar” in prose", path: "safe.txt" },
-    ],
-    ["inherited name rejection", "constructor", "{“length”:“x”,“foo”:1}", {}],
-    [
-      "escaped smart-quoted content",
-      "write",
-      String.raw` {“path”:“safe.txt”,“content”:“line\nnext \"quoted\" path C:\\tmp mark \u2713 invalid \d”}`,
-      { path: "safe.txt", content: 'line\nnext "quoted" path C:\\tmp mark ✓ invalid \\d' },
-    ],
-    [
-      "member-looking prose",
-      "write",
-      String.raw` {"path":"safe.txt","content":“text ”, “path”: “other.txt””}`,
-      { path: "safe.txt", content: "text ”, “path”: “other.txt”" },
-    ],
-  ])("repairs %s across partial, end and final messages", async (_name, tool, input, expected) => {
+  it.each<{
+    name: string;
+    tool: string;
+    input: string | string[];
+    expected: Record<string, unknown>;
+  }>`
+    name                              | tool             | input                                                                                                                                              | expected
+    ${"fragmented JSON with junk"}    | ${"read"}        | ${[".functions.read:0 ", '{"path":"/tmp/report.txt"', "}x"]}                                                                                       | ${{ path: "/tmp/report.txt" }}
+    ${"smart-quoted edit arrays"}     | ${"edit"}        | ${String.raw` {“path”:“notes/报告.md”,“edits”:[{“oldText”:“旧的 **草稿**”,“newText”:“更新 \"草稿\"\nnext”},{“oldText”:“tail”,“newText”:“done”}]}`} | ${{ path: "notes/报告.md", edits: [{ oldText: "旧的 **草稿**", newText: '更新 "草稿"\nnext' }, { oldText: "tail", newText: "done" }] }}
+    ${"case-varied read options"}     | ${"Read"}        | ${"{“path”:“safe.txt”,“offset”:5,“limit”:20}"}                                                                                                     | ${{ path: "safe.txt", offset: 5, limit: 20 }}
+    ${"structured name beats prefix"} | ${"grep"}        | ${[".functions.read:0 ", String.raw` {“pattern”:“Use ”, “limit”: “bar” in prose”,“path”:“safe.txt”}`]}                                             | ${{ pattern: "Use ”, “limit”: “bar” in prose", path: "safe.txt" }}
+    ${"inherited name rejection"}     | ${"constructor"} | ${"{“length”:“x”,“foo”:1}"}                                                                                                                        | ${{}}
+    ${"escaped smart-quoted content"} | ${"write"}       | ${String.raw` {“path”:“safe.txt”,“content”:“line\nnext \"quoted\" path C:\\tmp mark \u2713 invalid \d”}`}                                          | ${{ path: "safe.txt", content: 'line\nnext "quoted" path C:\\tmp mark ✓ invalid \\d' }}
+    ${"member-looking prose"}         | ${"write"}       | ${String.raw` {"path":"safe.txt","content":“text ”, “path”: “other.txt””}`}                                                                        | ${{ path: "safe.txt", content: "text ”, “path”: “other.txt”" }}
+  `("repairs $name across partial, end and final messages", async ({ tool, input, expected }) => {
     const { calls, result, finalMessage } = await repair(
       typeof input === "string" ? [input] : input,
       tool,
