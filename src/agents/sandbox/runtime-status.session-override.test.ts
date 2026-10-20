@@ -9,7 +9,11 @@ import {
   resolveSandboxRuntimeStatusAsync,
   resolveSandboxRuntimeStatusesForPersistedSessions,
   withSandboxRuntimeStatusesInWorker,
+  type SandboxRuntimeStatusParams,
 } from "./runtime-status.js";
+
+const optionalStatus = { sandboxed: false, sandboxRequired: false };
+const requiredStatus = { sandboxed: true, sandboxRequired: true };
 
 describe("session sandbox override", () => {
   it("uses canonical classification identity in exact, batch, and context resolution", async () => {
@@ -18,6 +22,8 @@ describe("session sandbox override", () => {
       setRuntimeConfigSnapshot(cfg);
       const optional = "agent:main:optional";
       const required = "agent:main:required";
+      const classify = (sessionKey: string, classificationSessionKey?: string) =>
+        resolveSandboxRuntimeStatusAsync({ cfg, sessionKey, classificationSessionKey });
       for (const sessionKey of [optional, required]) {
         await upsertSessionEntryCore(
           { agentId: "main", sessionKey },
@@ -29,39 +35,13 @@ describe("session sandbox override", () => {
           },
         );
       }
-      expect(
-        (await resolveSandboxRuntimeStatusAsync({ cfg, sessionKey: "optional" })).sandboxed,
-      ).toBe(false);
-      expect(
-        await resolveSandboxRuntimeStatusAsync({
-          cfg,
-          sessionKey: optional,
-          classificationSessionKey: required,
-        }),
-      ).toMatchObject({
-        sandboxed: true,
-        sandboxRequired: true,
-      });
-      expect(
-        await resolveSandboxRuntimeStatusAsync({
-          cfg,
-          sessionKey: required,
-          classificationSessionKey: optional,
-        }),
-      ).toMatchObject({
-        sandboxed: false,
-        sandboxRequired: false,
-      });
-      expect(
-        (
-          await resolveSandboxRuntimeStatusesForPersistedSessions([
-            { cfg, agentId: "main", env: state.env, sessionKeys: [optional, required] },
-          ])
-        )[0],
-      ).toMatchObject([
-        { sandboxed: false, sandboxRequired: false },
-        { sandboxed: true, sandboxRequired: true },
+      expect((await classify("optional")).sandboxed).toBe(false);
+      expect(await classify(optional, required)).toMatchObject(requiredStatus);
+      expect(await classify(required, optional)).toMatchObject(optionalStatus);
+      const [persisted] = await resolveSandboxRuntimeStatusesForPersistedSessions([
+        { cfg, agentId: "main", env: state.env, sessionKeys: [optional, required] },
       ]);
+      expect(persisted).toMatchObject([optionalStatus, requiredStatus]);
       const native = "agent:main:dashboard:incognito-batch";
       await upsertSessionEntryCore(
         { agentId: "main", sessionKey: native },
@@ -77,11 +57,7 @@ describe("session sandbox override", () => {
           { env: state.env, cwd: state.workspaceDir, assertCurrent() {} },
           (statuses) => statuses,
         ),
-      ).resolves.toMatchObject([
-        { sandboxed: false, sandboxRequired: false },
-        { sandboxed: true, sandboxRequired: true },
-        { sandboxed: true, sandboxRequired: true },
-      ]);
+      ).resolves.toMatchObject([optionalStatus, requiredStatus, requiredStatus]);
       // An opted-out session must not start or prepare any sandbox backend.
       await expect(
         resolveSandboxContext({
@@ -101,35 +77,26 @@ describe("session sandbox override", () => {
       };
       setRuntimeConfigSnapshot(cfg);
       const sessionKey = "agent:main:candidate";
+      const prepared = (
+        preparedSessionEntry: NonNullable<
+          SandboxRuntimeStatusParams["preparedSessionEntry"]
+        > | null,
+      ) => resolvePreparedSandboxRuntimeStatus({ cfg, sessionKey, preparedSessionEntry });
       await upsertSessionEntryCore(
         { agentId: "main", sessionKey },
         { sessionId: "candidate", updatedAt: 1 },
       );
       expect((await resolveSandboxRuntimeStatusAsync({ cfg, sessionKey })).sandboxed).toBe(true);
+      expect(prepared({ sandboxMode: "off" }).sandboxed).toBe(false);
+      expect(prepared(null).sandboxed).toBe(true);
       expect(
-        resolvePreparedSandboxRuntimeStatus({
-          cfg,
-          sessionKey,
-          preparedSessionEntry: { sandboxMode: "off" },
-        }).sandboxed,
-      ).toBe(false);
-      expect(
-        resolvePreparedSandboxRuntimeStatus({ cfg, sessionKey, preparedSessionEntry: null })
-          .sandboxed,
-      ).toBe(true);
-      expect(
-        resolvePreparedSandboxRuntimeStatus({
-          cfg,
-          sessionKey,
-          preparedSessionEntry: {
-            sandbox: "required",
-            sandboxMode: "off",
-            createdActor: { type: "human", source: "profile", id: "creator" },
-          },
+        prepared({
+          sandbox: "required",
+          sandboxMode: "off",
+          createdActor: { type: "human", source: "profile", id: "creator" },
         }),
       ).toMatchObject({
-        sandboxed: true,
-        sandboxRequired: true,
+        ...requiredStatus,
         isolationSubject: { kind: "profile", profileId: "creator" },
         workspaceAccess: "ro",
       });

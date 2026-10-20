@@ -22,29 +22,30 @@ registerSealedRuntime({ json5, resolveSecureTempRoot: () => control });
 setLoggerOverride({ file: process.env.OPENCLAW_TEST_LOG_FILE });
 let callerSql = 0;
 const native = requireNodeSqlite();
+function countSqlCalls<T extends (...args: never[]) => unknown>(method: T): T {
+  return new Proxy(method, {
+    apply(target, receiver, args) {
+      callerSql++;
+      return Reflect.apply(target, receiver, args);
+    },
+  });
+}
 for (const method of ["prepare", "exec"] as const) {
   Object.defineProperty(native.DatabaseSync.prototype, method, {
     ...Object.getOwnPropertyDescriptor(native.DatabaseSync.prototype, method),
-    value: new Proxy(native.DatabaseSync.prototype[method], {
-      apply(target, receiver, args) {
-        callerSql++;
-        return Reflect.apply(target, receiver, args);
-      },
-    }),
+    value: countSqlCalls(native.DatabaseSync.prototype[method]),
   });
 }
 for (const method of ["get", "all", "run", "iterate"] as const) {
   Object.defineProperty(native.StatementSync.prototype, method, {
     ...Object.getOwnPropertyDescriptor(native.StatementSync.prototype, method),
-    value: new Proxy(native.StatementSync.prototype[method], {
-      apply(target, receiver, args) {
-        callerSql++;
-        return Reflect.apply(target, receiver, args);
-      },
-    }),
+    value: countSqlCalls(native.StatementSync.prototype[method]),
   });
 }
 let backendCalls = 0;
+const unusedCommand = async () => {
+  throw new Error("This fixture never executes a sandbox command");
+};
 const restoreBackend = registerSandboxBackend("docker", async (params) => {
   backendCalls++;
   return {
@@ -52,12 +53,8 @@ const restoreBackend = registerSandboxBackend("docker", async (params) => {
     runtimeId: `synthetic-${params.sessionKey}`,
     runtimeLabel: "synthetic SDK owner proof",
     workdir: "/workspace",
-    async buildExecSpec() {
-      throw new Error("This fixture never executes a sandbox command");
-    },
-    async runShellCommand() {
-      throw new Error("This fixture never executes a sandbox command");
-    },
+    buildExecSpec: unusedCommand,
+    runShellCommand: unusedCommand,
   };
 });
 const runtime = createPluginRuntime();
