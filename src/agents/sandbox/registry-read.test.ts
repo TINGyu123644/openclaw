@@ -67,9 +67,10 @@ const readIds = (scopeKey = "agent:main") =>
   readRegisteredSandboxRuntimeIds({ backendId: "fixture", scopeKey });
 
 async function seed() {
-  fixture();
+  const paths = fixture();
   await updateRegistry(container);
   await updateBrowserRegistry(browser);
+  return paths;
 }
 
 it.each(["cached", "fresh"])(
@@ -137,36 +138,30 @@ it("lists persisted sandbox runtime state through the actual CLI without parent 
   }
 });
 
-it("keeps all absent registry reads noncreating", async () => {
-  const { databasePath } = fixture();
-  expect(await readRegistry()).toEqual({ entries: [] });
-  expect(await readRegistryEntry("missing")).toBeNull();
-  expect(await readIds("missing")).toEqual([]);
-  expect(await readBrowserRegistry()).toEqual({ entries: [] });
-  expect(fs.existsSync(databasePath)).toBe(false);
-});
-
-it("ignores malformed registry payloads without rewriting them", async () => {
-  await seed();
-  const { db } = openOpenClawStateDatabase();
-  executeSqliteQuerySync(
-    db,
-    getNodeSqliteKysely<DB>(db)
-      .updateTable("sandbox_registry_entries")
-      .set({ entry_json: "not-json" })
-      .where("container_name", "=", container.containerName),
-  );
-  expect(await readRegistryEntry(container.containerName)).toBeNull();
-  expect(await readRegistry()).toEqual({ entries: [] });
-  expect(await readIds()).toEqual([]);
-  expect(await readBrowserRegistry()).toEqual({ entries: [browser] });
-  expect(
+it.each(["absent", "malformed"])("reads %s registry state without mutating it", async (mode) => {
+  const { databasePath } = mode === "absent" ? fixture() : await seed();
+  if (mode === "malformed") {
+    const { db } = openOpenClawStateDatabase();
     executeSqliteQuerySync(
       db,
       getNodeSqliteKysely<DB>(db)
-        .selectFrom("sandbox_registry_entries")
-        .select("entry_json")
+        .updateTable("sandbox_registry_entries")
+        .set({ entry_json: "not-json" })
         .where("container_name", "=", container.containerName),
-    ).rows,
-  ).toEqual([{ entry_json: "not-json" }]);
+    );
+  }
+  expect(await readRegistry()).toEqual({ entries: [] });
+  expect(await readRegistryEntry(container.containerName)).toBeNull();
+  expect(await readIds(mode === "absent" ? "missing" : "agent:main")).toEqual([]);
+  expect(await readBrowserRegistry()).toEqual({ entries: mode === "absent" ? [] : [browser] });
+  if (mode === "absent") {
+    expect(fs.existsSync(databasePath)).toBe(false);
+  } else {
+    const { db } = openOpenClawStateDatabase();
+    const row = getNodeSqliteKysely<DB>(db)
+      .selectFrom("sandbox_registry_entries")
+      .select("entry_json")
+      .where("container_name", "=", container.containerName);
+    expect(executeSqliteQuerySync(db, row).rows).toEqual([{ entry_json: "not-json" }]);
+  }
 });

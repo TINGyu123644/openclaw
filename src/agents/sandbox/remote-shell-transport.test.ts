@@ -65,14 +65,12 @@ describe.runIf(process.platform !== "win32")("provider-owned remote shell transp
           reject,
         });
       const refused = await execute(false);
-      expect(refused.exitCode).toBe(42);
-      expect(refused.stdout).toBe("");
+      expect(refused).toMatchObject({ exitCode: 42, stdout: "" });
       await fs.writeFile(path.join(localDir, "payload"), "changed after claim transfer");
       await expect(session.uploadDirectory(upload)).rejects.toThrow();
       expect(await fs.readFile(path.join(remoteDir, "payload"))).toEqual(payload);
       await fs.writeFile(claimFile, "original");
-      const completed = await execute();
-      expect(completed.stdout).toBe("synthetic-exec-private:unset");
+      await expect(execute()).resolves.toMatchObject({ stdout: "synthetic-exec-private:unset" });
     } finally {
       await fs.writeFile(claimFile, "original");
       await prepared.cleanup();

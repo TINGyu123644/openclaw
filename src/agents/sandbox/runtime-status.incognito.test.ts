@@ -32,6 +32,7 @@ const harness: AgentHarness = {
   },
 };
 afterEach(() => memorySessionActorOwners.reset());
+const enabledStatus = { sandboxed: true, sandboxRequired: false };
 
 function memoryPolicy(state: OpenClawTestState, suffix: string) {
   const sessionKey = `agent:main:dashboard:incognito-${suffix}`;
@@ -41,9 +42,8 @@ function memoryPolicy(state: OpenClawTestState, suffix: string) {
     session: { store: storePath },
   };
   return {
-    sessionKey,
+    request: { cfg, sessionKey },
     storePath,
-    cfg,
     scope: { agentId: "main", sessionKey, storePath, env: state.env },
     source: { env: state.env, cwd: state.env.OPENCLAW_STATE_DIR!, assertCurrent() {} },
   };
@@ -51,8 +51,8 @@ function memoryPolicy(state: OpenClawTestState, suffix: string) {
 
 it("classifies unbound memory policy and rejects execution after permission or sandbox changes", async () => {
   await withOpenClawTestState({ label: "memory-policy" }, async (state) => {
-    const { cfg, sessionKey, scope, source } = memoryPolicy(state, "policy");
-    const classify = () => resolveSandboxRuntimeStatus({ cfg, sessionKey });
+    const { request, scope, source } = memoryPolicy(state, "policy");
+    const classify = () => resolveSandboxRuntimeStatus(request);
     const observe = observeHostDataSql();
     try {
       await replaceSessionEntry(scope, {
@@ -65,9 +65,9 @@ it("classifies unbound memory policy and rejects execution after permission or s
         nativeRuntimeConsent: "fixture",
       });
       const params = {
-        config: cfg,
+        config: request.cfg,
         agentId: "main",
-        sessionKey,
+        sessionKey: request.sessionKey,
         sessionId: "policy",
         permissionMode: "full" as const,
       };
@@ -75,28 +75,24 @@ it("classifies unbound memory policy and rejects execution after permission or s
       await expect(assertAgentHarnessExecutionEnvironment(harness, params)).resolves.toBe(true);
       expect(
         resolveSandboxRuntimeStatus({
-          cfg,
-          sessionKey,
+          ...request,
           preparedSessionEntry: { sandbox: "required" },
         }).sandboxRequired,
       ).toBe(true);
       await expect(
-        withSandboxRuntimeStatusesInWorker([{ cfg, sessionKey }], source, (statuses) => statuses),
+        withSandboxRuntimeStatusesInWorker([request], source, (statuses) => statuses),
       ).resolves.toMatchObject([{ sandboxed: false }]);
       await upsertSessionEntryCore(scope, { permissionMode: "workspace" });
       await expect(assertAgentHarnessExecutionEnvironment(harness, params)).rejects.toThrow(
         "requires Full access",
       );
       await expect(
-        withSandboxRuntimeStatusInWorker({ cfg, sessionKey }, source, async () => {
+        withSandboxRuntimeStatusInWorker(request, source, async () => {
           await upsertSessionEntryCore(scope, { sandboxMode: undefined });
           return "prepared";
         }),
       ).rejects.toThrow("Session entry changed during read");
-      expect(classify()).toMatchObject({
-        sandboxRequired: false,
-        sandboxed: true,
-      });
+      expect(classify()).toMatchObject(enabledStatus);
       expect(observe.queries).toEqual([]);
     } finally {
       observe.restore();
@@ -106,14 +102,11 @@ it("classifies unbound memory policy and rejects execution after permission or s
 
 it("classifies absent incognito sessions without allocating an owner", async () => {
   await withOpenClawTestState({ label: "memory-policy-absent" }, async (state) => {
-    const { cfg, sessionKey, storePath, source } = memoryPolicy(state, "absent");
-    expect(resolveSandboxRuntimeStatus({ cfg, sessionKey })).toMatchObject({
-      sandboxed: true,
-      sandboxRequired: false,
-    });
+    const { request, storePath, source } = memoryPolicy(state, "absent");
+    expect(resolveSandboxRuntimeStatus(request)).toMatchObject(enabledStatus);
     await expect(
-      withSandboxRuntimeStatusesInWorker([{ cfg, sessionKey }], source, (statuses) => statuses),
-    ).resolves.toMatchObject([{ sandboxed: true, sandboxRequired: false }]);
+      withSandboxRuntimeStatusesInWorker([request], source, (statuses) => statuses),
+    ).resolves.toMatchObject([enabledStatus]);
     expect(memorySessionActorOwners.read({ agentId: "main", path: storePath })).toBeUndefined();
   });
 });
