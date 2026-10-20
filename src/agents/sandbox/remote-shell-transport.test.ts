@@ -6,6 +6,10 @@ import { spawnCommand } from "../../process/exec.js";
 import { createRemoteShellSandboxSession } from "./remote-shell-transport.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const sessionFor = (root: string, argv: (command: string) => string[], env = process.env) =>
+  createRemoteShellSandboxSession({
+    buildCommand: ({ remoteCommand }) => ({ argv: argv(remoteCommand), env, cwd: root }),
+  });
 
 async function uploadFixture(prefix: string, payload: string | Buffer) {
   const root = await fs.realpath(tempDirs.make(prefix));
@@ -40,12 +44,9 @@ describe.runIf(process.platform !== "win32")("provider-owned remote shell transp
       process.exit(child.status ?? 1);
     `,
     );
-    const session = createRemoteShellSandboxSession({
-      buildCommand: ({ remoteCommand }) => ({
-        argv: [process.execPath, providerFile, remoteCommand],
-        env: { ...process.env, PROVIDER_LOCAL_ONLY: "synthetic-provider-auth" },
-        cwd: root,
-      }),
+    const session = sessionFor(root, (command) => [process.execPath, providerFile, command], {
+      ...process.env,
+      PROVIDER_LOCAL_ONLY: "synthetic-provider-auth",
     });
     await session.uploadDirectory(upload);
     expect(await fs.readFile(path.join(remoteDir, "payload"))).toEqual(payload);
@@ -80,13 +81,11 @@ describe.runIf(process.platform !== "win32")("provider-owned remote shell transp
 
   it("rejects an upload when the remote shell dies from a signal without a status", async () => {
     const upload = await uploadFixture("remote-shell-signal-", "payload-bytes");
-    const session = createRemoteShellSandboxSession({
-      buildCommand: () => ({
-        argv: ["/bin/sh", "-c", 'cat >/dev/null; kill -TERM "$$"'],
-        env: { ...process.env },
-        cwd: upload.root,
-      }),
-    });
+    const session = sessionFor(upload.root, () => [
+      "/bin/sh",
+      "-c",
+      'cat >/dev/null; kill -TERM "$$"',
+    ]);
     await expect(session.uploadDirectory(upload)).rejects.toThrow(
       "remote exited from signal SIGTERM",
     );

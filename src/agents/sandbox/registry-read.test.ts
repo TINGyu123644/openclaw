@@ -5,7 +5,10 @@ import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { sandboxListCommand } from "../../commands/sandbox.js";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../../config/config.js";
-import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
+import {
+  executeSqliteQuerySync as execute,
+  getNodeSqliteKysely as query,
+} from "../../infra/kysely-sync.js";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import type { DB } from "../../state/openclaw-state-db.generated.js";
 import {
@@ -65,6 +68,14 @@ const listedContainer = {
 };
 const readIds = (scopeKey = "agent:main") =>
   readRegisteredSandboxRuntimeIds({ backendId: "fixture", scopeKey });
+const unrelatedRows = Array.from({ length: 512 }, (_, index) => ({
+  plugin_id: "fixture",
+  namespace: "unrelated",
+  entry_key: String(index),
+  value_json: JSON.stringify({ text: "x".repeat(16 * 1024) }),
+  created_at: 1,
+  expires_at: null,
+}));
 
 async function seed() {
   const paths = fixture();
@@ -78,24 +89,9 @@ it.each(["cached", "fresh"])(
   async (mode) => {
     expect(isMainThread).toBe(true);
     await seed();
-    // A shared state database can be much larger than its sandbox registry.
-    runOpenClawStateWriteTransaction(({ db }) => {
-      executeSqliteQuerySync(
-        db,
-        getNodeSqliteKysely<DB>(db)
-          .insertInto("plugin_state_entries")
-          .values(
-            Array.from({ length: 512 }, (_, index) => ({
-              plugin_id: "fixture",
-              namespace: "unrelated",
-              entry_key: String(index),
-              value_json: JSON.stringify({ text: "x".repeat(16 * 1024) }),
-              created_at: 1,
-              expires_at: null,
-            })),
-          ),
-      );
-    });
+    runOpenClawStateWriteTransaction(({ db }) =>
+      execute(db, query<DB>(db).insertInto("plugin_state_entries").values(unrelatedRows)),
+    );
     if (mode === "fresh") {
       await closeOpenClawStateDatabaseAsync();
     }
@@ -142,9 +138,9 @@ it.each(["absent", "malformed"])("reads %s registry state without mutating it", 
   const { databasePath } = mode === "absent" ? fixture() : await seed();
   if (mode === "malformed") {
     const { db } = openOpenClawStateDatabase();
-    executeSqliteQuerySync(
+    execute(
       db,
-      getNodeSqliteKysely<DB>(db)
+      query<DB>(db)
         .updateTable("sandbox_registry_entries")
         .set({ entry_json: "not-json" })
         .where("container_name", "=", container.containerName),
@@ -158,10 +154,10 @@ it.each(["absent", "malformed"])("reads %s registry state without mutating it", 
     expect(fs.existsSync(databasePath)).toBe(false);
   } else {
     const { db } = openOpenClawStateDatabase();
-    const row = getNodeSqliteKysely<DB>(db)
+    const row = query<DB>(db)
       .selectFrom("sandbox_registry_entries")
       .select("entry_json")
       .where("container_name", "=", container.containerName);
-    expect(executeSqliteQuerySync(db, row).rows).toEqual([{ entry_json: "not-json" }]);
+    expect(execute(db, row).rows).toEqual([{ entry_json: "not-json" }]);
   }
 });
