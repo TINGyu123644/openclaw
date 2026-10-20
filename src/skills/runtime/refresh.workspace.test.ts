@@ -1,8 +1,13 @@
+import { once } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { PassThrough, Writable } from "node:stream";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
+import {
+  awaitGateBeforeSettlement as beforeSettlement,
+  createDeferred,
+} from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import {
   registerAgentWorkspaceAccess,
@@ -57,17 +62,11 @@ beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
 });
 
-async function waitForSkillsTurn() {
-  await new Promise<void>((resolve) => {
-    setImmediate(resolve);
-  });
-}
-
 async function snapshot(params: Parameters<typeof resolveSnapshot>[0]) {
   return (await resolveSnapshot(params)).snapshot;
 }
 
-const writeAt = (root: string, name: string, description: string) =>
+const skillWriter = (root: string, name: string) => (description: string) =>
   writeSkill({ dir: path.join(root, name), name, description });
 const sources = (root: string) => resolveWorkspaceSkillSourcePlan(root, { workspaceOnly: true });
 
@@ -80,75 +79,54 @@ function watchWorker(workspace: string, output: Writable) {
     input,
     output,
   });
-  const request = JSON.stringify({ sourcePlan: sources(workspace) }) + "\n";
-  const start = () => input.write(request);
+  const start = () => input.write(JSON.stringify({ sourcePlan: sources(workspace) }) + "\n");
   return { input, task, start };
 }
 
-async function expectRetirementPending(
-  task: Promise<void>,
-  subscription: { signal: AbortSignal; end: () => void },
-) {
-  await awaitGateBeforeSettlement(
-    waitForSkillsTurn(),
-    task,
-    "Retirement settled before transport close",
-  );
-  expect(subscription.signal.aborted).toBe(true);
-  return async () => {
-    subscription.end();
-    await task;
-  };
-}
-
-it("retires remote subscriptions during Gateway drain and reacquires after runtime reset", async () => {
-  const { params, subscriptions, access, gateway } = await remoteFixture();
-  await resolveSnapshot(params);
-  const original = subscriptions[0]!;
-  const version = versionOf(gateway);
-
-  markGatewayRestartDraining("stop (SIGTERM)");
-  expect(original.signal.aborted).toBe(true);
-  original.emit("change");
-  expect(versionOf(gateway)).toBe(version);
-  await refresh.ensureSkillsWatcher(params);
-  expect(access.watchSkills).toHaveBeenCalledTimes(1);
-  await access.watchSkills.mock.results[0]!.value;
-  await waitForSkillsTurn();
-  expect(versionOf(gateway)).toBe(version);
-
-  // Teardown joins the retired transport; the next runtime gets a fresh signal.
-  await refresh.closeSkillsWatchers(true);
-  resetGatewayWorkAdmission();
-  await refresh.ensureSkillsWatcher(params);
-  expect(access.watchSkills).toHaveBeenCalledTimes(2);
-  expect(subscriptions[1]!.signal.aborted).toBe(false);
-  const restartedVersion = versionOf(gateway);
-  original.emit("unavailable");
-  expect(versionOf(gateway)).toBe(restartedVersion);
-  subscriptions[1]!.emit("change");
-  expect(versionOf(gateway)).toBeGreaterThan(restartedVersion);
-});
-
-it("waits for an agent's remote skills subscription to close before deletion completes", async () => {
-  const { params, subscriptions } = await remoteFixture({ finishOnAbort: false });
-  const closeStarted = createDeferred();
-  await refresh.ensureSkillsWatcher({ ...params, agentId: "worker" });
-  const subscription = subscriptions[0]!;
-  subscription.signal.addEventListener("abort", () => closeStarted.resolve(), { once: true });
-  const drain = refresh.closeSkillsWatchersForAgent({ agentId: "worker" });
-  try {
-    await awaitGateBeforeSettlement(
-      closeStarted.promise,
-      drain,
-      "Agent drainage completed before remote watcher cancellation began",
-    );
-    await expectRetirementPending(drain, subscription);
-  } finally {
-    subscription.end();
-  }
-  await drain;
-});
+it.each(["Gateway drain", "closed transport"])(
+  "reacquires after %s and ignores retired events",
+  async (reason) => {
+    const { params, subscriptions, access, gateway, release } = await remoteFixture();
+    await resolveSnapshot(params);
+    const original = subscriptions[0]!;
+    if (reason === "Gateway drain") {
+      const version = versionOf(gateway);
+      markGatewayRestartDraining("stop (SIGTERM)");
+      expect(original.signal.aborted).toBe(true);
+      original.emit("change");
+      expect(versionOf(gateway)).toBe(version);
+      await refresh.ensureSkillsWatcher(params);
+      expect(access.watchSkills).toHaveBeenCalledTimes(1);
+      await access.watchSkills.mock.results[0]!.value;
+      await nextTurn();
+      expect(versionOf(gateway)).toBe(version);
+      await refresh.closeSkillsWatchers(true);
+      resetGatewayWorkAdmission();
+    } else {
+      original.end();
+      await nextTurn();
+    }
+    await refresh.ensureSkillsWatcher(params);
+    expect(access.watchSkills).toHaveBeenCalledTimes(2);
+    expect(subscriptions[1]!.signal.aborted).toBe(false);
+    const version = versionOf(gateway);
+    original.emit(reason === "Gateway drain" ? "unavailable" : "change");
+    expect(versionOf(gateway)).toBe(version);
+    if (reason === "Gateway drain") {
+      subscriptions[1]!.emit("change");
+      expect(versionOf(gateway)).toBeGreaterThan(version);
+    } else {
+      release();
+      expect(subscriptions[1]!.signal.aborted).toBe(true);
+      subscriptions[1]!.emit("change");
+      expect(versionOf(gateway)).toBe(version);
+      await refresh.closeSkillsWatchers();
+      await expect(refresh.ensureSkillsWatcher(params)).rejects.toThrow(
+        "Workspace access is stopped",
+      );
+    }
+  },
+);
 
 it("keeps a shared remote subscription until its last agent owner is removed", async () => {
   const { params, subscriptions, access } = await remoteFixture();
@@ -166,7 +144,7 @@ it("keeps a shared remote subscription until its last agent owner is removed", a
 async function remoteFixture(options: { finishOnAbort?: boolean } = {}) {
   const gateway = workspaceDir;
   const host = await mkdir("host");
-  const writes = (description: string) => writeAt(path.join(host, "skills"), "guide", description);
+  const writes = skillWriter(path.join(host, "skills"), "guide");
   await writes("Original host instructions");
   type Watch = NonNullable<AgentWorkspaceAccess["watchSkills"]>;
   const subscriptions: Array<{
@@ -197,19 +175,22 @@ async function remoteFixture(options: { finishOnAbort?: boolean } = {}) {
   const config = { plugins: { enabled: false } };
   releases.push(release);
   const params = { workspaceDir: gateway, config };
-  return { gateway, writes, subscriptions, access, release, params };
+  const remoteParams = {
+    watcherKey: JSON.stringify([gateway, undefined, undefined]),
+    workspaceDir: gateway,
+    access,
+    sourcePlan: sources(gateway),
+  };
+  return { gateway, writes, subscriptions, access, release, params, remoteParams };
 }
 
 it("bounds remote subscriptions by recent access and invalidates evicted source readmission", async () => {
-  const { gateway, access, subscriptions } = await remoteFixture();
-  const sourcePlan = sources(gateway);
+  const { gateway, access, subscriptions, remoteParams } = await remoteFixture();
   const ensure = (index: number) =>
     remoteRefresh.ensureRemoteSkillsWatcher({
+      ...remoteParams,
       watcherKey: `remote-${index}`,
-      workspaceDir: gateway,
       executionWorkspaceDir: `/remote/workspace-${index}`,
-      access,
-      sourcePlan,
     });
   for (let index = 0; index < 128; index++) {
     await ensure(index);
@@ -231,52 +212,55 @@ it("bounds remote subscriptions by recent access and invalidates evicted source 
   expect(subscriptions.filter(({ signal }) => !signal.aborted)).toHaveLength(128);
 });
 
-it("joins remote replacement, disposal, and shutdown before releasing their callers", async () => {
-  const fixtureOptions = { finishOnAbort: false };
-  const { gateway, access, subscriptions } = await remoteFixture(fixtureOptions);
-  const params = {
-    watcherKey: JSON.stringify([gateway, undefined, undefined]),
-    workspaceDir: gateway,
-    access,
-    sourcePlan: sources(gateway),
-  };
-  try {
-    await remoteRefresh.ensureRemoteSkillsWatcher(params);
-    const finishReplacement = await expectRetirementPending(
-      remoteRefresh.ensureRemoteSkillsWatcher({
-        ...params,
-        executionWorkspaceDir: "/remote/replacement",
-      }),
-      subscriptions[0]!,
-    );
-    expect(access.watchSkills).toHaveBeenCalledTimes(1);
-    const retiredVersion = versionOf(gateway);
-    subscriptions[0]!.emit("unavailable");
-    expect(versionOf(gateway)).toBe(retiredVersion);
-    await finishReplacement();
-    expect(access.watchSkills).toHaveBeenCalledTimes(2);
-
-    const finishDisposal = await expectRetirementPending(
-      refresh.ensureSkillsWatcher({
-        workspaceDir: gateway,
-        sourcePlan: params.sourcePlan,
-        config: { plugins: { enabled: false }, skills: { load: { watch: false } } },
-      }),
-      subscriptions[1]!,
-    );
-    await finishDisposal();
-
-    await remoteRefresh.ensureRemoteSkillsWatcher(params);
-    const finishClosing = await expectRetirementPending(
-      remoteRefresh.closeRemoteSkillsWatchers(),
-      subscriptions[2]!,
-    );
-    await finishClosing();
-  } finally {
-    fixtureOptions.finishOnAbort = true;
-    subscriptions.forEach(({ end }) => end());
-  }
-});
+it.each(["agent deletion", "replacement", "watch disablement", "shutdown"] as const)(
+  "joins transport retirement during %s",
+  async (operation) => {
+    const options = { finishOnAbort: false };
+    const { access, subscriptions, remoteParams, params } = await remoteFixture(options);
+    const agentId = operation === "agent deletion" ? "worker" : undefined;
+    if (agentId) {
+      await refresh.ensureSkillsWatcher({ ...params, agentId });
+    } else {
+      await remoteRefresh.ensureRemoteSkillsWatcher(remoteParams);
+    }
+    const subscription = subscriptions[0]!;
+    const aborted = once(subscription.signal, "abort");
+    const task =
+      operation === "replacement"
+        ? remoteRefresh.ensureRemoteSkillsWatcher({
+            ...remoteParams,
+            executionWorkspaceDir: "/remote/replacement",
+          })
+        : operation === "watch disablement"
+          ? refresh.ensureSkillsWatcher({
+              ...params,
+              sourcePlan: remoteParams.sourcePlan,
+              config: { plugins: { enabled: false }, skills: { load: { watch: false } } },
+            })
+          : operation === "shutdown"
+            ? remoteRefresh.closeRemoteSkillsWatchers()
+            : refresh.closeSkillsWatchersForAgent({ agentId: "worker" });
+    try {
+      await beforeSettlement(aborted, task, "Retirement settled before cancellation");
+      await beforeSettlement(nextTurn(), task, "Retirement settled before transport close");
+      expect(subscription.signal.aborted).toBe(true);
+      if (operation === "replacement") {
+        expect(access.watchSkills).toHaveBeenCalledTimes(1);
+        const version = versionOf(gateway);
+        subscription.emit("unavailable");
+        expect(versionOf(gateway)).toBe(version);
+      }
+      subscription.end();
+      await task;
+      if (operation === "replacement") {
+        expect(access.watchSkills).toHaveBeenCalledTimes(2);
+      }
+    } finally {
+      options.finishOnAbort = true;
+      subscriptions.forEach(({ end }) => end());
+    }
+  },
+);
 
 it("restores snapshot reuse only on verified availability, without adding a content revision", async () => {
   const { params, subscriptions, access, writes, gateway } = await remoteFixture();
@@ -307,16 +291,13 @@ it("restores snapshot reuse only on verified availability, without adding a cont
 
 it("publishes initial availability and completed skill changes through the worker wire", async () => {
   const workspace = await mkdir("watch-worker");
-  const write = (description: string) =>
-    writeAt(path.join(workspace, "skills"), "guide", description);
+  const write = skillWriter(path.join(workspace, "skills"), "guide");
   await write("Worker content");
   const output = new PassThrough();
-  const messages: unknown[] = [];
   const received = { available: createDeferred(), change: createDeferred() };
   output.on("data", (chunk: Buffer) => {
     for (const line of chunk.toString().trim().split("\n")) {
       const message: unknown = JSON.parse(line);
-      messages.push(message);
       if (message === "available" || message === "change") {
         received[message].resolve();
       }
@@ -324,12 +305,10 @@ it("publishes initial availability and completed skill changes through the worke
   });
   const { input, task, start } = watchWorker(workspace, output);
   start();
-  await received.available.promise;
-  expect(messages).toContain("available");
+  await expect(received.available.promise).resolves.toBeUndefined();
   await write("Later worker edit");
   await refresh.refreshSkillsDiscovery({ workspaceDir: workspace });
-  await received.change.promise;
-  expect(messages).toContain("change");
+  await expect(received.change.promise).resolves.toBeUndefined();
   input.end();
   await task;
   output.destroy();
@@ -342,17 +321,14 @@ it("refreshes Gateway Workshop edits alongside the existing host subscription", 
     agents: { entries: { main: { agentDir: path.join(gateway, "agent") } } },
   };
   const workshop = resolveWorkshopSkillsDir(config, "main");
-  const write = (description: string) => writeAt(workshop, "authored", description);
+  const write = skillWriter(workshop, "authored");
   await write("Original Workshop instructions");
   const request = { ...params, config, agentId: "main" };
   const first = await snapshot(request);
   expect(first.prompt).toContain("Original Workshop instructions");
   await write("Updated Workshop instructions");
   await refresh.refreshSkillsDiscovery({ workspaceDir: gateway, reason: "workshop" });
-  const updated = await snapshot({
-    ...request,
-    existingSnapshot: first,
-  });
+  const updated = await snapshot({ ...request, existingSnapshot: first });
   expect(updated.prompt).toContain("Updated Workshop instructions");
   expect(access.watchSkills).toHaveBeenCalledTimes(1);
   expect(subscriptions[0]!.signal.aborted).toBe(false);
@@ -361,24 +337,6 @@ it("refreshes Gateway Workshop edits alongside the existing host subscription", 
     config: { ...config, skills: { load: { watch: false } } },
   });
   expect(subscriptions[0]!.signal.aborted).toBe(true);
-});
-
-it("reacquires a closed transport and rejects late events after binding retirement", async () => {
-  const { params, gateway, subscriptions, access, release } = await remoteFixture();
-  await refresh.ensureSkillsWatcher(params);
-  subscriptions[0]!.end();
-  await waitForSkillsTurn();
-  await refresh.ensureSkillsWatcher(params);
-  expect(access.watchSkills).toHaveBeenCalledTimes(2);
-  const version = versionOf(gateway);
-  subscriptions[0]!.emit("change");
-  expect(versionOf(gateway)).toBe(version);
-  release();
-  expect(subscriptions[1]!.signal.aborted).toBe(true);
-  subscriptions[1]!.emit("change");
-  expect(versionOf(gateway)).toBe(version);
-  await refresh.closeSkillsWatchers();
-  await expect(refresh.ensureSkillsWatcher(params)).rejects.toThrow("Workspace access is stopped");
 });
 
 it("joins accepted stdout writes after retiring skill discovery", async () => {
@@ -406,11 +364,7 @@ it("joins accepted stdout writes after retiring skill discovery", async () => {
     expect(output.writableNeedDrain).toBe(true);
     input.end();
     await retired.promise;
-    await awaitGateBeforeSettlement(
-      waitForSkillsTurn(),
-      worker,
-      "Worker settled before stdout drained",
-    );
+    await beforeSettlement(nextTurn(), worker, "Worker settled before stdout drained");
     flushed.resolve();
     await worker;
     expect(output.writableLength).toBe(0);
@@ -426,9 +380,9 @@ it("keeps canonical Gateway roots local through discovery, refresh, and host cha
   const { params, access, release } = await remoteFixture();
   const canonical = await mkdir("canonical-project");
   const projectRoot = path.join(canonical, "skills");
-  await writeAt(projectRoot, "guide", "Lower precedence project");
+  await skillWriter(projectRoot, "guide")("Lower precedence project");
   const project = path.join(projectRoot, "project");
-  const write = (description: string) => writeAt(projectRoot, "project", description);
+  const write = skillWriter(projectRoot, "project");
   await write("Original project instructions");
   const canonicalParams = {
     ...params,

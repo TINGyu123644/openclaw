@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
-import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { createDeferredCore as deferred } from "../../shared/deferred.js";
 import {
   closeOpenClawStateDatabaseAsync as closeDatabase,
@@ -42,10 +41,8 @@ async function fixture() {
     librarySelections: [pin, pin],
     skillFilter: [],
   };
-  const expected = {
-    skill: { name, description: "Saved procedure" },
-    syncDirName: `library-${skillId}-${revision}`,
-  };
+  const skill = { name, description: "Saved procedure" };
+  const expected = { skill, syncDirName: `library-${skillId}-${revision}` };
   await closeDatabase();
   const resolve = (skillsSnapshot = snapshot) =>
     resolveEntries({ workspaceDir, config: { plugins: { enabled: false } }, skillsSnapshot });
@@ -57,7 +54,6 @@ async function fixture() {
 
 it("loads cold and cached library entries without parent SQL", async () => {
   const f = await fixture();
-  requireNodeSqlite();
   const sql = observeMainThreadSql();
   try {
     await f.run(async () => {
@@ -79,54 +75,50 @@ it("loads cold and cached library entries without parent SQL", async () => {
   }
 });
 
-it.each(["root", "pins", "admission", "warm admission"] as const)(
-  "retains lazy library context across %s",
-  async (change) => {
-    const f = await fixture();
-    const otherRoot = dirs.make("embedded-library-other-");
-    const gate = deferred();
-    const entered = deferred();
-    await f.run(async () => {
-      if (change === "warm admission") {
-        await (await f.resolve()).loadSkillEntries();
-      }
-      const prepare = loader.prepareWorkspaceSkills;
-      vi.spyOn(loader, "prepareWorkspaceSkills").mockImplementationOnce(async (...args) => {
-        const entries = await prepare(...args);
-        entered.resolve();
-        await gate.promise;
-        return entries;
-      });
-      process.env.OPENCLAW_STATE_DIR = otherRoot;
-      const result = await f.resolve();
-      process.env.OPENCLAW_STATE_DIR = f.root;
-      const pending = result.loadSkillEntries();
-      const outcome = pending.catch((error: unknown) => error);
-      await entered.promise;
-      if (change === "root") {
-        process.env.OPENCLAW_STATE_DIR = otherRoot;
-      } else if (change === "pins") {
-        Object.assign(f.pin, {
-          skillId: "changed",
-          revision: "f".repeat(64),
-          name: "changed",
-          ownerProfileId: null,
-        });
-      } else {
-        await closeDatabaseAt(path.join(f.root, "state", "openclaw.sqlite"));
-      }
-      gate.resolve();
-      if (change.endsWith("admission")) {
-        expect(await outcome).toMatchObject({ code: "STATE_DATABASE_READ_ADMISSION_INVALIDATED" });
-      }
-      // Invalidated reads cannot fill the cache, but a fresh invocation may retry.
-      const entries = change.endsWith("admission")
-        ? await result.loadSkillEntries()
-        : await pending;
-      f.check(entries);
-      expect(entries[0]?.skill.filePath.startsWith(`${f.root}${path.sep}`)).toBe(true);
-      expect(await result.loadSkillEntries()).toBe(entries);
-      expect(fs.existsSync(path.join(otherRoot, "state", "openclaw.sqlite"))).toBe(false);
+it.each(["root", "pins", "admission", "warm"] as const)("captures %s context", async (change) => {
+  const f = await fixture();
+  const otherRoot = dirs.make("embedded-library-other-");
+  const gate = deferred();
+  const entered = deferred();
+  await f.run(async () => {
+    if (change === "warm") {
+      await (await f.resolve()).loadSkillEntries();
+    }
+    const prepare = loader.prepareWorkspaceSkills;
+    vi.spyOn(loader, "prepareWorkspaceSkills").mockImplementationOnce(async (...args) => {
+      const entries = await prepare(...args);
+      entered.resolve();
+      await gate.promise;
+      return entries;
     });
-  },
-);
+    process.env.OPENCLAW_STATE_DIR = otherRoot;
+    const result = await f.resolve();
+    process.env.OPENCLAW_STATE_DIR = f.root;
+    const pending = result.loadSkillEntries();
+    const outcome = pending.catch((error: unknown) => error);
+    await entered.promise;
+    if (change === "root") {
+      process.env.OPENCLAW_STATE_DIR = otherRoot;
+    } else if (change === "pins") {
+      Object.assign(f.pin, {
+        skillId: "changed",
+        revision: "f".repeat(64),
+        name: "changed",
+        ownerProfileId: null,
+      });
+    } else {
+      await closeDatabaseAt(path.join(f.root, "state", "openclaw.sqlite"));
+    }
+    gate.resolve();
+    const invalidated = change === "admission" || change === "warm";
+    if (invalidated) {
+      expect(await outcome).toMatchObject({ code: "STATE_DATABASE_READ_ADMISSION_INVALIDATED" });
+    }
+    // Invalidated reads cannot fill the cache, but a fresh invocation may retry.
+    const entries = invalidated ? await result.loadSkillEntries() : await pending;
+    f.check(entries);
+    expect(entries[0]?.skill.filePath.startsWith(`${f.root}${path.sep}`)).toBe(true);
+    expect(await result.loadSkillEntries()).toBe(entries);
+    expect(fs.existsSync(path.join(otherRoot, "state", "openclaw.sqlite"))).toBe(false);
+  });
+});
