@@ -9,6 +9,20 @@ import { createDeferred, withinTest } from "./promise.js";
 import { useAutoCleanupTempDirTracker } from "./temp-dir.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const fixturePath = () => path.join(tempDirs.make("openclaw-process-wait-"), "ready");
+function cancellation(signal: AbortSignal) {
+  const controller = new AbortController();
+  const reason = new Error("test cancelled");
+  return {
+    signal: AbortSignal.any([signal, controller.signal]),
+    reason,
+    abort: () => controller.abort(reason),
+  };
+}
+const fileError = (file: string, cause: Error) => ({
+  message: expect.stringContaining(file),
+  cause,
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -22,74 +36,56 @@ const fileWaits = [
 it.for(fileWaits)(
   "rechecks $name readiness before rejecting abort",
   async ({ wait, expected }, { signal }) => {
-    const file = path.join(tempDirs.make("openclaw-process-wait-"), "ready");
-    const controller = new AbortController();
-    const waiting = wait(file, AbortSignal.any([signal, controller.signal]));
+    const file = fixturePath();
+    const cancelled = cancellation(signal);
+    const waiting = wait(file, cancelled.signal);
     fsSync.writeFileSync(file, "42\n");
-    controller.abort(new Error("test cancelled"));
+    cancelled.abort();
     expect(await waiting).toBe(expected);
   },
 );
 
 it.for(fileWaits)("diagnoses missing $name on abort", async ({ wait }, { signal }) => {
-  const file = path.join(tempDirs.make("openclaw-process-wait-"), "missing");
-  const controller = new AbortController();
-  const reason = new Error("test cancelled");
-  const bounded = AbortSignal.any([signal, controller.signal]);
-  const waiting = wait(file, bounded);
-  const rejected = expect(waiting).rejects.toMatchObject({
-    message: expect.stringContaining(file),
-    cause: reason,
-  });
-  controller.abort(reason);
+  const file = fixturePath();
+  const cancelled = cancellation(signal);
+  const waiting = wait(file, cancelled.signal);
+  const rejected = expect(waiting).rejects.toMatchObject(fileError(file, cancelled.reason));
+  cancelled.abort();
   await rejected;
-  await expect(wait(file, bounded)).rejects.toMatchObject({
-    message: expect.stringContaining(file),
-    cause: reason,
-  });
+  await expect(wait(file, cancelled.signal)).rejects.toMatchObject(
+    fileError(file, cancelled.reason),
+  );
 });
 
-it.for([""])(
-  "waits through invalid PID contents %j using the injected delay",
-  async (contents, { signal }) => {
-    const file = path.join(tempDirs.make("openclaw-process-wait-"), "pid");
-    fsSync.writeFileSync(file, contents);
-    const tick = createDeferred();
-    const waiting = waitForPidFile(file, signal, () => tick.promise);
-    fsSync.writeFileSync(file, "42\n");
-    tick.resolve();
-    expect(await waiting).toBe(42);
-  },
-);
+it("waits through empty PID contents using the injected delay", async ({ signal }) => {
+  const file = fixturePath();
+  fsSync.writeFileSync(file, "");
+  const tick = createDeferred();
+  const waiting = waitForPidFile(file, signal, () => tick.promise);
+  fsSync.writeFileSync(file, "42\n");
+  tick.resolve();
+  expect(await waiting).toBe(42);
+});
 
 it("aborts an injected delay without waiting for its completion", async ({ signal }) => {
-  const file = path.join(tempDirs.make("openclaw-process-wait-"), "missing");
+  const file = fixturePath();
   const tick = createDeferred();
-  const controller = new AbortController();
-  const reason = new Error("test cancelled");
-  const waiting = waitForPidFile(
-    file,
-    AbortSignal.any([signal, controller.signal]),
-    () => tick.promise,
-  );
-  const rejected = expect(waiting).rejects.toMatchObject({
-    message: expect.stringContaining(file),
-    cause: reason,
-  });
-  controller.abort(reason);
+  const cancelled = cancellation(signal);
+  const waiting = waitForPidFile(file, cancelled.signal, () => tick.promise);
+  const rejected = expect(waiting).rejects.toMatchObject(fileError(file, cancelled.reason));
+  cancelled.abort();
   await rejected;
   tick.resolve();
 });
 
 it("diagnoses a live process on abort", async ({ signal }) => {
-  const controller = new AbortController();
-  const reason = new Error("test cancelled");
-  const waiting = waitForDead(process.pid, AbortSignal.any([signal, controller.signal]));
+  const cancelled = cancellation(signal);
+  const waiting = waitForDead(process.pid, cancelled.signal);
   const rejected = expect(waiting).rejects.toMatchObject({
     message: `process still alive: ${process.pid}`,
-    cause: reason,
+    cause: cancelled.reason,
   });
-  controller.abort(reason);
+  cancelled.abort();
   await rejected;
 });
 

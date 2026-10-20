@@ -8,6 +8,10 @@ import { withEnvAsync } from "../../src/test-utils/env.js";
 import { createDeferred, withTestTimeout } from "./promise.js";
 import { runQaGatewayTestFixture } from "./qa-gateway-test-lifetime.js";
 
+const record = (events: string[], event: string) => () => {
+  events.push(event);
+};
+
 function testOwner(signal: AbortSignal, events: string[] = []) {
   const hooks: Array<Parameters<TestContext["onTestFinished"]>[0]> = [];
   return {
@@ -49,18 +53,14 @@ it("joins the actual cancelled body and ordered cleanup before finishing the tes
         events.push("body-settled");
       }
     },
-    () => {
-      events.push("client");
-    },
+    record(events, "client"),
     async () => {
       events.push("gateway-start");
       gatewayCleanup.resolve();
       await releaseCleanup.promise;
       events.push("gateway-end");
     },
-    () => {
-      events.push("provider");
-    },
+    record(events, "provider"),
   );
   const outcome = run.catch((error: unknown) => error);
   let finishing: Promise<void> | undefined;
@@ -76,20 +76,13 @@ it("joins the actual cancelled body and ordered cleanup before finishing the tes
     await setImmediate();
     expect(finished).toBe(false);
     await expect(fs.stat(scratch!)).resolves.toBeDefined();
-    expect(events).toEqual(["registered", "body", "body-settled", "client", "gateway-start"]);
+    const beforeRelease = ["registered", "body", "body-settled", "client", "gateway-start"];
+    expect(events).toEqual(beforeRelease);
     releaseCleanup.resolve();
     expect(await outcome).toBe(reason);
     await finishing;
     await expect(fs.stat(scratch!)).rejects.toMatchObject({ code: "ENOENT" });
-    expect(events).toEqual([
-      "registered",
-      "body",
-      "body-settled",
-      "client",
-      "gateway-start",
-      "gateway-end",
-      "provider",
-    ]);
+    expect(events).toEqual([...beforeRelease, "gateway-end", "provider"]);
   } finally {
     controller.abort(reason);
     releaseCleanup.resolve();
@@ -115,9 +108,7 @@ it("retains acquisition rollback failure even before a resource reaches the call
             throw failure;
           });
         },
-        () => {
-          events.push("final-cleanup");
-        },
+        record(events, "final-cleanup"),
       );
       await expect(run).rejects.toBe(failure);
       await expect(owner.finish(context)).rejects.toMatchObject({
