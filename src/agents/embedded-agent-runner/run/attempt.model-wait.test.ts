@@ -55,9 +55,8 @@ function harness() {
   return {
     statuses,
     delivered,
-    calls,
     async start(signal?: AbortSignal) {
-      return await wrapped(
+      const observed = await wrapped(
         makeProviderModelFixture({
           id: "local-model",
           provider: "ollama",
@@ -67,6 +66,7 @@ function harness() {
         { messages: [] },
         { signal },
       );
+      return { observed, ...expectDefined(calls.at(-1), "started call") };
     },
   };
 }
@@ -74,24 +74,22 @@ function harness() {
 it("clears wait on the first stream event and admits another wait on a later call", async () => {
   const h = harness();
   const first = await h.start();
-  const firstCall = expectDefined(h.calls[0], "first call");
-  firstCall.report("response");
+  first.report("response");
   expect(getAgentRunContext("model-wait-test")?.localModelWait).toEqual({ requestId: "call-1" });
-  firstCall.report("response");
-  firstCall.stream.push({ type: "start", partial: makeAssistantMessageFixture() });
-  const iterator = first[Symbol.asyncIterator]();
+  first.report("response");
+  first.stream.push({ type: "start", partial: makeAssistantMessageFixture() });
+  const iterator = first.observed[Symbol.asyncIterator]();
   await iterator.next();
   expect(getAgentRunContext("model-wait-test")?.localModelWait).toBeUndefined();
-  firstCall.report("slot");
-  firstCall.stream.end(makeAssistantMessageFixture());
-  await first.result();
+  first.report("slot");
+  first.stream.end(makeAssistantMessageFixture());
+  await first.observed.result();
 
   const second = await h.start();
-  const secondCall = expectDefined(h.calls[1], "second call");
-  secondCall.report("slot");
-  firstCall.report("response");
-  secondCall.stream.end(makeAssistantMessageFixture());
-  await second.result();
+  second.report("slot");
+  first.report("response");
+  second.stream.end(makeAssistantMessageFixture());
+  await second.observed.result();
   await Promise.resolve();
 
   expect(h.statuses).toEqual([
@@ -108,8 +106,7 @@ it.each(["abort", "failure", "completion"] as const)(
   async (termination) => {
     const h = harness();
     const abort = new AbortController();
-    const result = await h.start(abort.signal);
-    const call = expectDefined(h.calls[0], "held call");
+    const call = await h.start(abort.signal);
     call.report("response");
     if (termination === "abort") {
       abort.abort();
@@ -121,7 +118,7 @@ it.each(["abort", "failure", "completion"] as const)(
         ...(termination === "completion" ? {} : { errorMessage: "synthetic failure" }),
       }),
     );
-    await result.result();
+    await call.observed.result();
     expect(getAgentRunContext("model-wait-test")?.localModelWait).toBeUndefined();
     call.report("slot");
     expect(h.statuses).toEqual([

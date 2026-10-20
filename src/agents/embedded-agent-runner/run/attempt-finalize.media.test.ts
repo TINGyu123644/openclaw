@@ -127,16 +127,10 @@ describe("finalizeEmbeddedAttempt trajectory capture", () => {
   );
 
   it("records canonical message snapshots without reprojecting them", () => {
+    const media = [{ path: "/media/canonical.png", contentType: "image/png" }];
+    const message = castAgentMessage({ role: "user", content: "inspect", __openclaw: { media } });
     const events = captureTrajectory({
-      messagesSnapshot: [
-        castAgentMessage({
-          role: "user",
-          content: "inspect",
-          __openclaw: {
-            media: [{ path: "/media/canonical.png", contentType: "image/png" }],
-          },
-        }),
-      ],
+      messagesSnapshot: [message],
     });
     const captured = (
       events["model.completed"]?.messagesSnapshot as Array<Record<string, unknown>> | undefined

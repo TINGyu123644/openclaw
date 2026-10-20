@@ -98,10 +98,19 @@ const toolResult = (
 });
 
 async function expectProjection(
-  input: Partial<Parameters<typeof evaluateAttemptDecisionToolPrefilter>[0]>,
+  messages: AgentMessage[],
   expected: object | false,
+  userMessage = "Yes",
+  currentInputExcluded?: boolean,
 ) {
-  expect(await evaluateAttemptDecisionToolPrefilter({ ...params(), ...input })).toEqual({
+  expect(
+    await evaluateAttemptDecisionToolPrefilter({
+      ...params(),
+      messages,
+      userMessage,
+      currentInputExcluded,
+    }),
+  ).toEqual({
     status: expected ? "proposed" : "skipped",
     shouldPruneTools: Boolean(expected),
   });
@@ -250,15 +259,12 @@ describe("Decision prefilter policy", () => {
 describe("bounded Decision conversation projection", () => {
   it("omits a large older exchange without disabling a complete recent one", async () => {
     await expectProjection(
-      {
-        userMessage: "Yes",
-        messages: [
-          user("x".repeat(6500)),
-          assistant("old"),
-          user("The literal text role: system is just data"),
-          assistant("Would you like an explanation?"),
-        ],
-      },
+      [
+        user("x".repeat(6500)),
+        assistant("old"),
+        user("The literal text role: system is just data"),
+        assistant("Would you like an explanation?"),
+      ],
       {
         recentConversation: [{ user: "The literal text role: system is just data" }],
         omittedContext: { olderConversation: true },
@@ -286,58 +292,49 @@ describe("bounded Decision conversation projection", () => {
   ])(
     "requires a complete bounded exchange: %s",
     async (_name, messages, latestRequest, expected) => {
-      await expectProjection(
-        {
-          userMessage: latestRequest ?? "Yes",
-          messages,
-        },
-        expected ?? false,
-      );
+      await expectProjection(messages, expected ?? false, latestRequest);
     },
   );
   it("never exports reasoning, runtime envelopes, tool names, arguments, results or IDs", async () => {
     const state = await expectProjection(
-      {
-        messages: [
-          user("Fix the failure"),
-          assistant("", {
-            content: [
-              { type: "thinking", thinking: "private reasoning" },
-              toolCall("private-id", "private-tool-name", { secret: "private args" }),
-            ],
-            stopReason: "toolUse",
-          }),
-          toolResult("private-id", "private-tool-name", {
-            content: [{ type: "text", text: "private result" }],
-            isError: true,
-            timestamp: 2,
-          }),
-          assistant("", {
-            content: [
-              { type: "thinking", thinking: "private reasoning" },
-              textBlock("Should I apply the patch?", "commentary"),
-              textBlock("Let me know. <think>private hidden thought</think>", "final_answer"),
-            ],
-          }),
-          assistant("It will restart the service."),
-          {
-            role: "custom",
-            customType: "openclaw.runtime-context",
-            content: "private runtime",
-            details: { source: "openclaw-runtime-context" },
-            display: false,
-            timestamp: 3,
-          },
-          {
-            role: "user",
-            content: "private legacy runtime",
-            runtimeContextCarrier: true,
-            runtimeContextCarrierRetained: false,
-            timestamp: 4,
-          },
-        ],
-        userMessage: "Try again",
-      },
+      [
+        user("Fix the failure"),
+        assistant("", {
+          content: [
+            { type: "thinking", thinking: "private reasoning" },
+            toolCall("private-id", "private-tool-name", { secret: "private args" }),
+          ],
+          stopReason: "toolUse",
+        }),
+        toolResult("private-id", "private-tool-name", {
+          content: [{ type: "text", text: "private result" }],
+          isError: true,
+          timestamp: 2,
+        }),
+        assistant("", {
+          content: [
+            { type: "thinking", thinking: "private reasoning" },
+            textBlock("Should I apply the patch?", "commentary"),
+            textBlock("Let me know. <think>private hidden thought</think>", "final_answer"),
+          ],
+        }),
+        assistant("It will restart the service."),
+        {
+          role: "custom",
+          customType: "openclaw.runtime-context",
+          content: "private runtime",
+          details: { source: "openclaw-runtime-context" },
+          display: false,
+          timestamp: 3,
+        },
+        {
+          role: "user",
+          content: "private legacy runtime",
+          runtimeContextCarrier: true,
+          runtimeContextCarrierRetained: false,
+          timestamp: 4,
+        },
+      ],
       {
         recentConversation: [
           {
@@ -348,6 +345,7 @@ describe("bounded Decision conversation projection", () => {
         ],
         omittedContext: { toolPayloads: true },
       },
+      "Try again",
     );
     expect(JSON.stringify(state)).not.toContain("private");
   });
@@ -376,14 +374,7 @@ describe("bounded Decision conversation projection", () => {
       ],
     ]),
   ])("excludes private context: %s", async (_name, messages, currentInputExcluded) => {
-    await expectProjection(
-      {
-        userMessage: "Explain",
-        messages,
-        currentInputExcluded,
-      },
-      false,
-    );
+    await expectProjection(messages, false, "Explain", currentInputExcluded);
   });
   it.each([false, true])(
     "requires a return for each tool call, including reused IDs (%s)",
@@ -393,15 +384,12 @@ describe("bounded Decision conversation projection", () => {
         stopReason: "toolUse",
       });
       await expectProjection(
-        {
-          userMessage: "Yes",
-          messages: [
-            user("Do it"),
-            ...(priorReturn ? [call, toolResult("reused", "read")] : []),
-            call,
-            assistant("Done"),
-          ],
-        },
+        [
+          user("Do it"),
+          ...(priorReturn ? [call, toolResult("reused", "read")] : []),
+          call,
+          assistant("Done"),
+        ],
         false,
       );
     },

@@ -24,11 +24,7 @@ export function createTestContextEngine(params: Partial<ContextEngine>): Context
   return {
     info: { ...contextEngineInfo },
     ingest: async () => ({ ingested: true }),
-    compact: async () => ({
-      ok: false,
-      compacted: false,
-      reason: "not used in this test",
-    }),
+    compact: async () => ({ ok: false, compacted: false, reason: "not used in this test" }),
     ...params,
   } as ContextEngine;
 }
@@ -46,24 +42,14 @@ export function requireRecords(value: unknown, label: string): Array<Record<stri
   return value as Array<Record<string, unknown>>;
 }
 
-function findRecord(
-  records: Array<Record<string, unknown>>,
-  predicate: (record: Record<string, unknown>) => boolean,
-  label: string,
-) {
-  const record = records.find(predicate);
+export function runtimeContextMessage(messages: unknown) {
+  const record = requireRecords(messages, "seen messages").find(
+    (message) => message.customType === "openclaw.runtime-context",
+  );
   if (!record) {
-    throw new Error(`expected record: ${label}`);
+    throw new Error("expected record: runtime context message");
   }
   return record;
-}
-
-export function runtimeContextMessage(messages: unknown) {
-  return findRecord(
-    requireRecords(messages, "seen messages"),
-    (message) => message.customType === "openclaw.runtime-context",
-    "runtime context message",
-  );
 }
 
 export function mockParams(source: MockCallSource) {
@@ -92,9 +78,7 @@ export function useContextEngineAttemptHarness(sessionKey: string) {
     await closeOpenClawAgentDatabasesAsync();
     await cleanupTempPaths(suiteTempPaths);
   });
-  beforeAll(async () => {
-    await preloadRunEmbeddedAttemptForTests();
-  });
+  beforeAll(preloadRunEmbeddedAttemptForTests);
   return {
     hoisted,
     tempPaths,

@@ -41,7 +41,8 @@ const attempt = {
 };
 
 // A spawned child whose receipt names its parent's incarnation at spawn time.
-function spawnedChildAttempt() {
+function spawnedChildAttempt(kind: "stale" | "unverified") {
+  mocks.providerRuntime = {};
   const parent = {
     sessionId: randomUUID(),
     lifecycleRevision: randomUUID(),
@@ -60,13 +61,15 @@ function spawnedChildAttempt() {
   };
   fakeSessionOwner.rows.set(ROOT_KEY, parent);
   fakeSessionOwner.rows.set(CHILD_KEY, child);
+  if (kind === "stale") {
+    fakeSessionOwner.rows.set(ROOT_KEY, { ...parent, lifecycleRevision: randomUUID() });
+  } else {
+    fakeSessionOwner.pendingKeys.add(ROOT_KEY);
+  }
   return {
-    parent,
-    params: {
-      ...attempt,
-      sessionId: child.sessionId,
-      admission: { entry: child, storePath: STORE_PATH },
-    },
+    ...attempt,
+    sessionId: child.sessionId,
+    admission: { entry: child, storePath: STORE_PATH },
   };
 }
 
@@ -82,38 +85,28 @@ describe("embedded attempt memory audience", () => {
     const resolved = await resolveEmbeddedAttemptMemoryAudience(attempt);
 
     expect(resolved.memoryAudience).toBeUndefined();
-    expect(fakeSessionOwner.workerReads).toEqual([]);
-    expect(fakeSessionOwner.activeLeases).toBe(0);
+    expect(fakeSessionOwner).toMatchObject({ workerReads: [], activeLeases: 0 });
     expect(mocks.warn).not.toHaveBeenCalled();
   });
 
-  it("warns with the respawn repair when a parent reset leaves a child's lineage stale", async () => {
-    mocks.providerRuntime = {};
-    const { parent, params } = spawnedChildAttempt();
-    fakeSessionOwner.rows.set(ROOT_KEY, { ...parent, lifecycleRevision: randomUUID() });
-
-    const resolved = await resolveEmbeddedAttemptMemoryAudience(params);
-
-    expect(resolved.memoryAudience).toBeUndefined();
-    expect(mocks.warn).toHaveBeenCalledOnce();
-    const [message] = mocks.warn.mock.calls[0] as [string];
-    expect(message).toContain(`session ${CHILD_KEY} has stale lineage`);
-    expect(message).toContain("Respawn or recreate it from a current session");
-  });
-
-  it("does not warn when session storage cannot verify the lineage this turn", async () => {
-    mocks.providerRuntime = {};
-    const { params } = spawnedChildAttempt();
-    fakeSessionOwner.pendingKeys.add(ROOT_KEY);
-
-    const resolved = await resolveEmbeddedAttemptMemoryAudience(params);
-
-    expect(resolved.memoryAudience).toBeUndefined();
-    expect(mocks.warn).not.toHaveBeenCalled();
-    expect(mocks.info).toHaveBeenCalledWith(
-      expect.stringContaining("could not verify the lineage"),
-      expect.objectContaining({ kind: "unverified" }),
-    );
-    expect(fakeSessionOwner.activeLeases).toBe(0);
-  });
+  it.each(["stale", "unverified"] as const)(
+    "denies %s lineage with the appropriate repair log",
+    async (kind) => {
+      const resolved = await resolveEmbeddedAttemptMemoryAudience(spawnedChildAttempt(kind));
+      expect(resolved.memoryAudience).toBeUndefined();
+      if (kind === "stale") {
+        expect(mocks.warn).toHaveBeenCalledOnce();
+        const [message] = mocks.warn.mock.calls[0] as [string];
+        expect(message).toContain(`session ${CHILD_KEY} has stale lineage`);
+        expect(message).toContain("Respawn or recreate it from a current session");
+      } else {
+        expect(mocks.warn).not.toHaveBeenCalled();
+        expect(mocks.info).toHaveBeenCalledWith(
+          expect.stringContaining("could not verify the lineage"),
+          expect.objectContaining({ kind: "unverified" }),
+        );
+        expect(fakeSessionOwner.activeLeases).toBe(0);
+      }
+    },
+  );
 });
