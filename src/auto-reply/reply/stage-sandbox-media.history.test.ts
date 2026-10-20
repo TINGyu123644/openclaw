@@ -22,26 +22,32 @@ vi.mock("../../agents/sandbox/context.js", () => ({
 }));
 beforeEach(() => sandboxMocks.ensureSandboxWorkspaceForSession.mockReset());
 
+async function mediaFixture(home: string) {
+  const source = path.join(home, ".openclaw", "media", "inbound", "synthetic.png");
+  await fs.mkdir(path.dirname(source), { recursive: true });
+  await fs.writeFile(source, "synthetic image bytes");
+  return {
+    source,
+    ...createSandboxMediaContexts(source),
+    cfg: createSandboxMediaStageConfig(home),
+    sessionKey: "agent:main:main",
+    workspaceDir: path.join(home, "workspace"),
+  };
+}
+
 it.each(["settled", "failed", "aborted"] as const)(
   "settles attribution before attachment staging (%s)",
   async (outcome) => {
     await withSandboxMediaTempHome("openclaw-attribution-media-", async (home) => {
-      const source = path.join(home, ".openclaw", "media", "inbound", "synthetic.png");
-      await fs.mkdir(path.dirname(source), { recursive: true });
-      await fs.writeFile(source, "synthetic image bytes");
-      const workspaceDir = path.join(home, "workspace");
+      const fixture = await mediaFixture(home);
+      const { workspaceDir } = fixture;
       sandboxMocks.ensureSandboxWorkspaceForSession.mockResolvedValue(null);
-      const { ctx, sessionCtx } = createSandboxMediaContexts(source);
       const entered = createDeferred();
       const baseline = createDeferred();
       const controller = new AbortController();
       const failure = new Error("capture no longer active");
       const pending = stageSandboxMedia({
-        ctx,
-        sessionCtx,
-        cfg: createSandboxMediaStageConfig(home),
-        sessionKey: "agent:main:main",
-        workspaceDir,
+        ...fixture,
         abortSignal: controller.signal,
         awaitSessionDiffBaseline: () => {
           entered.resolve();
@@ -55,20 +61,19 @@ it.each(["settled", "failed", "aborted"] as const)(
         await expect(fs.stat(workspaceDir)).rejects.toMatchObject({ code: "ENOENT" });
         if (outcome === "failed") {
           baseline.reject(failure);
-          await expect(pending).rejects.toBe(failure);
         } else {
           if (outcome === "aborted") {
             controller.abort(failure);
           }
           baseline.resolve();
-          if (outcome === "aborted") {
-            await expect(pending).rejects.toBe(failure);
-          } else {
-            const result = await pending;
-            expect(
-              await fs.readFile(path.resolve(workspaceDir, result.staged.get(0)!), "utf8"),
-            ).toBe("synthetic image bytes");
-          }
+        }
+        if (outcome !== "settled") {
+          await expect(pending).rejects.toBe(failure);
+        } else {
+          const result = await pending;
+          expect(await fs.readFile(path.resolve(workspaceDir, result.staged.get(0)!), "utf8")).toBe(
+            "synthetic image bytes",
+          );
         }
         expect(sandboxMocks.ensureSandboxWorkspaceForSession).toHaveBeenCalledTimes(
           outcome === "settled" ? 1 : 0,
@@ -94,16 +99,13 @@ it.each([
   "keeps $reference image fetchable in history (sandbox=$sandbox)",
   async ({ sandbox, reference }) => {
     await withSandboxMediaTempHome("openclaw-staged-history-", async (home) => {
-      const source = path.join(home, ".openclaw", "media", "inbound", "synthetic-test.png");
-      await fs.mkdir(path.dirname(source), { recursive: true });
-      await fs.writeFile(source, "synthetic image bytes");
-      const uri = "media://inbound/synthetic-test.png";
-      const workspaceDir = path.join(home, "workspace");
+      const fixture = await mediaFixture(home);
+      const { source, ctx, sessionCtx, workspaceDir } = fixture;
+      const uri = "media://inbound/synthetic.png";
       const sandboxDir = path.join(home, "sandbox");
       sandboxMocks.ensureSandboxWorkspaceForSession.mockResolvedValue(
         sandbox ? { workspaceDir: sandboxDir, containerWorkdir: "/work" } : null,
       );
-      const { ctx, sessionCtx } = createSandboxMediaContexts(source);
       ctx.media = [
         {
           path: reference === "managed-alias" ? uri : source,
@@ -114,13 +116,7 @@ it.each([
           kind: "image",
         },
       ];
-      const result = await stageSandboxMedia({
-        ctx,
-        sessionCtx,
-        cfg: createSandboxMediaStageConfig(home),
-        sessionKey: "agent:main:main",
-        workspaceDir,
-      });
+      const result = await stageSandboxMedia(fixture);
       const stagedPath = result.staged.get(0)!;
       expect(stagedPath).toBeTruthy();
       expect(stagedPath).not.toBe(source);

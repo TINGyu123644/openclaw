@@ -6,13 +6,13 @@ import { createReplyOperation } from "../../sessions/session-controller.js";
 import { getReplyPayloadMetadata } from "../reply-payload.js";
 import { markAgentRunFailureReplyPayload } from "./agent-runner-failure-reply.js";
 import { accountAgentTurn } from "./agent-runner-result-accounting.js";
+import { createTestFinalizationContext } from "./agent-runner-result-accounting.persistence.test-support.js";
 import { prepareReplyAgentPayloads } from "./agent-runner-result-payloads.js";
 import type { FinalizeReplyAgentRunInput } from "./agent-runner-result.types.js";
 import { resolveFollowupDeliveryDecision } from "./followup-delivery.js";
 import type { PendingContinuationSettlement } from "./get-reply.types.js";
 import type { AdmittedFollowupTurn } from "./reply-agent-turn-preparation.js";
-import { createMockFollowupRun, createMockTypingController } from "./test-helpers.js";
-import { createTypingSignaler } from "./typing-mode.js";
+import { createMockFollowupRun } from "./test-helpers.js";
 vi.mock("../../agents/subagents/registry/subagent-registry.js", async (importOriginal) => ({
   ...(await importOriginal<typeof SubagentRegistry>()),
   settleRequesterAfterSessionSpawns: settleRequester,
@@ -22,8 +22,11 @@ const settleRequester = vi.hoisted(() =>
 );
 
 const runId = "waiting-progress-run";
+type ResultMeta = FinalizeReplyAgentRunInput["execution"]["result"]["meta"];
 
-function createContext(): FinalizeReplyAgentRunInput {
+function createContext(
+  meta: ResultMeta = { durationMs: 0, yielded: true },
+): FinalizeReplyAgentRunInput {
   const sessionKey = "agent:main:waiting-progress";
   const followupRun = createMockFollowupRun({
     originatingChannel: "discord",
@@ -36,35 +39,16 @@ function createContext(): FinalizeReplyAgentRunInput {
   });
   onTestFinished(() => replyOperation.complete());
   return {
-    activeIsNewSession: false,
-    activeSessionEntry: undefined,
+    ...createTestFinalizationContext(followupRun, replyOperation),
     activeSessionStore: undefined,
-    blockReplyPipeline: null,
-    blockStreamingEnabled: false,
     cfg: {},
-    commandBody: followupRun.prompt,
-    defaultModel: followupRun.run.model,
-    followupRun,
-    isHeartbeat: false,
-    pendingToolTasks: new Set(),
-    preflightCompactionApplied: false,
-    queueKey: sessionKey,
-    replyMediaContext: { normalizePayload: async (payload) => payload },
-    replyOperation,
-    replyRouteThreadId: undefined,
     replyToChannel: "discord",
-    replyToMode: "off",
-    resolvedBlockStreamingBreak: "message_end",
-    resolvedQueue: { mode: "followup" },
-    resolvedVerboseLevel: "off",
-    returnWithQueuedFollowupDrain: (value) => value,
-    runFollowupTurn: async () => {},
     execution: {
       kind: "settled",
       status: "ok",
       result: {
         payloads: [],
-        meta: { durationMs: 0, yielded: true },
+        meta,
         acceptedSessionSpawns: [
           {
             runId: "index-worker-run",
@@ -78,16 +62,37 @@ function createContext(): FinalizeReplyAgentRunInput {
       autoCompactionCount: 0,
     },
     runId,
-    runStartedAt: Date.now(),
     sessionCtx: { Provider: "discord", Surface: "discord", To: "channel:C1" },
-    sessionKey,
-    shouldInjectGroupIntro: false,
-    typingSignals: createTypingSignaler({
-      typing: createMockTypingController(),
-      mode: "never",
-      isHeartbeat: false,
-    }),
   };
+}
+
+function captureContinuation(context: FinalizeReplyAgentRunInput) {
+  const pending = vi.fn<(settlement?: PendingContinuationSettlement) => void>();
+  context.opts = { onPendingContinuation: pending };
+  return {
+    pending,
+    settlement: () => expectDefined(pending.mock.calls[0]?.[0], "continuation settlement"),
+  };
+}
+
+async function prepareContinuation(
+  meta: ResultMeta = { durationMs: 0, continuationPending: true },
+) {
+  const context = createContext(meta);
+  const capture = captureContinuation(context);
+  expect(await prepare("ordinary", context)).toEqual([]);
+  return { context, ...capture, settlement: capture.settlement() };
+}
+
+function captureRawResponse(meta: ResultMeta, optional = false) {
+  const context = createContext(meta);
+  const onRawLlmResponse = vi.fn();
+  context.opts = { onRawLlmResponse };
+  if (optional) {
+    context.followupRun.run.terminalReplyExpectation = "optional";
+    context.execution.result.acceptedSessionSpawns = undefined;
+  }
+  return { context, onRawLlmResponse };
 }
 
 async function prepare(lane: "ordinary" | "queued", context: FinalizeReplyAgentRunInput) {
@@ -133,9 +138,8 @@ beforeEach(() => {
 });
 
 it("delivers an ordinary terminal failure", async () => {
-  const context = createContext();
+  const context = createContext({ durationMs: 0 });
   context.execution.result.acceptedSessionSpawns = undefined;
-  context.execution.result.meta = { durationMs: 0 };
   context.execution = {
     ...context.execution,
     status: "failed",
@@ -147,26 +151,20 @@ it("delivers an ordinary terminal failure", async () => {
 });
 
 it("does not capture a suppressed final reply", async () => {
-  const context = createContext();
-  const onRawLlmResponse = vi.fn();
-  context.opts = { onRawLlmResponse };
-  context.followupRun.run.terminalReplyExpectation = "optional";
-  context.execution.result.acceptedSessionSpawns = undefined;
-  context.execution.result.meta = { durationMs: 0, terminalReply: { disposition: "silent" } };
-  context.execution.result.payloads = [];
+  const { context, onRawLlmResponse } = captureRawResponse(
+    { durationMs: 0, terminalReply: { disposition: "silent" } },
+    true,
+  );
 
   expect(await prepare("ordinary", context)).toEqual([]);
   expect(onRawLlmResponse).not.toHaveBeenCalled();
 });
 
 it("captures a message-tool sentinel before the empty-payload return", async () => {
-  const context = createContext();
-  const onRawLlmResponse = vi.fn();
-  context.opts = { onRawLlmResponse };
-  context.followupRun.run.terminalReplyExpectation = "optional";
-  context.execution.result.acceptedSessionSpawns = undefined;
-  context.execution.result.meta = { durationMs: 0, finalAssistantRawText: "NO_REPLY" };
-  context.execution.result.payloads = [];
+  const { context, onRawLlmResponse } = captureRawResponse(
+    { durationMs: 0, finalAssistantRawText: "NO_REPLY" },
+    true,
+  );
   context.execution.result.messagingToolSourceReplyPayloads = [
     { text: "delivered by message tool", sourceReplyFinal: true },
   ];
@@ -176,16 +174,12 @@ it("captures a message-tool sentinel before the empty-payload return", async () 
 });
 
 it("does not capture hook-block rejection text as a model response", async () => {
-  const context = createContext();
-  const onRawLlmResponse = vi.fn();
-  context.opts = { onRawLlmResponse };
-  context.execution.result.meta = {
+  const { context, onRawLlmResponse } = captureRawResponse({
     durationMs: 0,
     livenessState: "blocked",
     finalAssistantRawText: "Blocked by before_agent_run policy",
     error: { kind: "hook_block", message: "Blocked by before_agent_run policy" },
-  };
-  context.execution.result.payloads = [];
+  });
 
   await prepare("ordinary", context);
   expect(onRawLlmResponse).not.toHaveBeenCalled();
@@ -239,31 +233,27 @@ describe.each(["ordinary", "queued"] as const)("%s waiting status delivery", (la
 it.each([true, false])(
   "settles an implicit continuation once after delivery=%s",
   async (delivered) => {
-    const context = createContext();
-    context.execution.result.meta = {
+    const context = createContext({
       durationMs: 0,
       continuationPending: true,
       yieldAcknowledgment: " ",
-    };
-    const onPendingContinuation = vi.fn<(settlement?: PendingContinuationSettlement) => void>();
-    context.opts = { onPendingContinuation };
+    });
+    const { pending, settlement: getSettlement } = captureContinuation(context);
     context.execution.directBlockDeliveries = [
       { payload: { text: "Unpublished draft" }, outcome: "delivered-not-visible", pending: true },
     ];
 
-    const payloads = await prepare("ordinary", context);
-    expect(payloads).toEqual([]);
+    expect(await prepare("ordinary", context)).toEqual([]);
 
     expect(settleRequester).not.toHaveBeenCalled();
-    expect(onPendingContinuation).toHaveBeenCalledOnce();
-    const settlement = onPendingContinuation.mock.calls[0]?.[0];
-    expect(settlement).toBeDefined();
-    await Promise.all([settlement?.settle(delivered), settlement?.settle(!delivered)]);
+    expect(pending).toHaveBeenCalledOnce();
+    const settlement = getSettlement();
+    await Promise.all([settlement.settle(delivered), settlement.settle(!delivered)]);
     expect(settleRequester).toHaveBeenCalledOnce();
     expect(settleRequester.mock.calls[0]?.[0]).toMatchObject({
       requesterYielded: delivered,
     });
-    await settlement?.settle(!delivered);
+    await settlement.settle(!delivered);
     expect(settleRequester).toHaveBeenCalledOnce();
   },
 );
@@ -271,9 +261,8 @@ it.each([true, false])(
 it.each(["ordinary", "queued"] as const)(
   "keeps a %s unauthored waiting status silent while a result is required",
   async (lane) => {
-    const context = createContext();
+    const context = createContext({ durationMs: 0, continuationPending: true });
     context.followupRun.run.terminalReplyExpectation = "result-required";
-    context.execution.result.meta = { durationMs: 0, continuationPending: true };
 
     expect(await prepare(lane, context)).toEqual([]);
   },
@@ -282,21 +271,12 @@ it.each(["ordinary", "queued"] as const)(
 it.each(["delivered", "cancelled", "aborted"] as const)(
   "settles an explicitly silent child continuation after %s",
   async (outcome) => {
-    const context = createContext();
-    context.execution.result.meta = {
+    const { context, settlement } = await prepareContinuation({
       durationMs: 0,
       continuationPending: true,
       finalAssistantRawText: "NO_REPLY",
       terminalReply: { disposition: "silent" },
-    };
-    const onPendingContinuation = vi.fn<(settlement?: PendingContinuationSettlement) => void>();
-    context.opts = { onPendingContinuation };
-
-    expect(await prepare("ordinary", context)).toEqual([]);
-    const settlement = expectDefined(
-      onPendingContinuation.mock.calls[0]?.[0],
-      "silent continuation settlement",
-    );
+    });
     if (outcome === "aborted") {
       expect(context.replyOperation.abortByUser()).toBe(true);
     }
@@ -310,15 +290,7 @@ it.each(["delivered", "cancelled", "aborted"] as const)(
 it.each(["refusal", "persistence failure"] as const)(
   "releases an implicit continuation after settlement %s",
   async (failure) => {
-    const context = createContext();
-    context.execution.result.meta = { durationMs: 0, continuationPending: true };
-    const onPendingContinuation = vi.fn<(settlement?: PendingContinuationSettlement) => void>();
-    context.opts = { onPendingContinuation };
-    await prepare("ordinary", context);
-    const settlement = expectDefined(
-      onPendingContinuation.mock.calls[0]?.[0],
-      "implicit continuation settlement",
-    );
+    const { settlement } = await prepareContinuation();
     settleRequester.mockImplementationOnce(async () => {
       if (failure === "persistence failure") {
         throw new Error("native settlement persistence failed");
@@ -346,12 +318,7 @@ it.each(["refusal", "persistence failure"] as const)(
 it.each(["committed", "unknown"] as const)(
   "retains the %s settlement outcome when finalization requests non-yielded compensation",
   async (outcome) => {
-    const context = createContext();
-    context.execution.result.meta = { durationMs: 0, continuationPending: true };
-    const pending = vi.fn<(settlement?: PendingContinuationSettlement) => void>();
-    context.opts = { onPendingContinuation: pending };
-    await prepare("ordinary", context);
-    const settlement = expectDefined(pending.mock.calls[0]?.[0], "outbox handoff");
+    const { settlement } = await prepareContinuation();
     const failure = new SubagentRegistryWriteError(
       outcome,
       new Error("native outcome retained"),
@@ -370,12 +337,7 @@ it.each(["committed", "unknown"] as const)(
 it.each(["replacement", "rebound key", "rebound session", "retained abort"] as const)(
   "settles the captured outbox after %s only while its original reply owner remains current",
   async (change) => {
-    const context = createContext();
-    context.execution.result.meta = { durationMs: 0, continuationPending: true };
-    const pending = vi.fn<(settlement?: PendingContinuationSettlement) => void>();
-    context.opts = { onPendingContinuation: pending };
-    await prepare("ordinary", context);
-    const settlement = expectDefined(pending.mock.calls[0]?.[0], "outbox handoff");
+    const { context, settlement } = await prepareContinuation();
     const operation = context.replyOperation;
     if (change === "replacement") {
       operation.complete();

@@ -38,22 +38,14 @@ it.each([
       const runScp = vi
         .spyOn(processExec, "runCommandWithTimeout")
         .mockImplementation(async (argv) => {
-          scpAttempts += 1;
-          if (scpAttempts === 1) {
-            return {
-              code: 1,
-              stdout: "",
-              stderr: "remote attachment is still materializing",
-              signal: null,
-              killed: false,
-              termination: "exit",
-            };
+          const retrying = ++scpAttempts === 1;
+          if (!retrying) {
+            await fs.writeFile(argv.at(-1)!, "remote attachment");
           }
-          await fs.writeFile(argv.at(-1)!, "remote attachment");
           return {
-            code: 0,
+            code: retrying ? 1 : 0,
             stdout: "",
-            stderr: "",
+            stderr: retrying ? "remote attachment is still materializing" : "",
             signal: null,
             killed: false,
             termination: "exit",
@@ -63,16 +55,16 @@ it.each([
         MediaRemoteHost: "user@gateway-host",
         media: [{ path: "/synthetic/attachments/report.txt" }],
       };
-      expect(
-        await stageRemoteInboundMediaIfNeeded({
+      const stage = (workspaceDir: string) =>
+        stageRemoteInboundMediaIfNeeded({
           ctx,
           cfg,
           agentId,
           sessionKey: "global",
-          workspaceDir: state.path(`${agentId}-workspace`),
+          workspaceDir,
           remoteMediaMode,
-        }),
-      ).toBe(true);
+        });
+      expect(await stage(state.path(`${agentId}-workspace`))).toBe(true);
       expect(runScp).toHaveBeenCalledTimes(2);
       const fact = ctx.media[0] as { path: string; workspaceDir?: string; staged?: boolean };
       expect(fact.staged).toBe(true);
@@ -88,16 +80,7 @@ it.each([
           expect(fact.workspaceDir?.startsWith(state.path("sandbox"))).toBe(true);
           expect(path.isAbsolute(fact.path)).toBe(false);
         }
-        expect(
-          await stageRemoteInboundMediaIfNeeded({
-            ctx,
-            cfg,
-            agentId,
-            sessionKey: "global",
-            workspaceDir: state.workspaceDir,
-            remoteMediaMode,
-          }),
-        ).toBe(false);
+        expect(await stage(state.workspaceDir)).toBe(false);
       } finally {
         // Cache mode uses the test harness's process root; remove only this call's input directory.
         if (remoteMediaMode === "cache") {
