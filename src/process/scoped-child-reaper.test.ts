@@ -37,18 +37,15 @@ vi.mock("./exec-spawn.js", async (importOriginal) => ({
 }));
 
 const ROOT = 400;
+const SELF = process.pid;
 const originalPlatform = process.platform;
 
 function trackedRoot(exited = false, pid = ROOT): ChildProcess {
-  return Object.defineProperties(new ChildProcess(), {
-    pid: { value: pid },
-    exitCode: { value: exited ? 0 : null },
-    signalCode: { value: null },
-  });
+  return Object.assign(new ChildProcess(), { pid, exitCode: exited ? 0 : null });
 }
 
 type ProcessRow = { pid: number; ppid: number; pgid: number; state: string };
-const processRow = (pid = 401, state = "Z", ppid = process.pid, pgid = ROOT): ProcessRow => ({
+const processRow = (pid = 401, state = "Z", ppid = SELF, pgid = ROOT) => ({
   pid,
   state,
   ppid,
@@ -59,17 +56,13 @@ let initialSigchldListeners: ReturnType<typeof process.listeners>;
 
 function setProcesses(rows: ProcessRow[]) {
   processRows = rows;
+  const children = rows.flatMap(({ pid, ppid }) => (ppid === SELF ? [pid] : [])).join(" ");
   proc.entries.mockImplementation((path?: string) =>
     path === "/proc/self/task" ? [String(process.pid), "900"] : rows.map((row) => String(row.pid)),
   );
   proc.stat.mockImplementation((path) => {
     if (path.endsWith("/children")) {
-      return path === "/proc/self/task/900/children"
-        ? rows
-            .filter((row) => row.ppid === process.pid)
-            .map((row) => row.pid)
-            .join(" ")
-        : "";
+      return path === "/proc/self/task/900/children" ? children : "";
     }
     const row = rows.find(({ pid }) => path === `/proc/${pid}/stat`);
     if (!row) {
@@ -96,6 +89,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   Object.defineProperty(process, "platform", { value: "linux" });
   proc.supported.mockReturnValue(true);
+  proc.alive.mockImplementation(() => processRows.some((row) => row.pgid === ROOT));
   proc.inspect.mockImplementation((pid) => ({ kind: "exited", pid }));
   proc.wait.mockImplementation((pid) => {
     setProcesses(processRows.filter((row) => row.pid !== pid));
@@ -132,10 +126,7 @@ it("bounds discovery for 50 retained groups and coalesces exit notifications", a
   expect(proc.stat.mock.calls.length).toBeLessThanOrEqual(60);
   expect(process.listenerCount("SIGCHLD")).toBe(initialSigchldListeners.length + 1);
 
-  for (const row of processRows) {
-    row.state = "Z";
-  }
-  setProcesses(processRows);
+  setProcesses(processRows.map((row) => Object.assign(row, { state: "Z" })));
   for (let notice = 0; notice < 5; notice++) {
     process.emit("SIGCHLD");
     await vi.advanceTimersByTimeAsync(10);
@@ -217,28 +208,13 @@ it("stops cleanup when an adopted zombie needs unavailable native support", asyn
   expect(vi.getTimerCount()).toBe(0);
 });
 
-it.each(["supported", "inspect", "wait"] as const)(
-  "retries a transient native %s failure within the existing cleanup budget",
-  async (operation) => {
-    proc[operation].mockImplementationOnce(() => {
-      throw new Error("native cleanup failed");
-    });
-    expect(() => scheduleAdoptedChildZombieReapAfterExit(trackedRoot(true), true)).not.toThrow();
-    await vi.advanceTimersByTimeAsync(25);
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(proc.wait).toHaveLastReturnedWith({
-      pid: 401,
-      exitCode: 0,
-      signal: null,
-      signalNumber: null,
-    });
-    setProcesses([]);
-    await vi.advanceTimersByTimeAsync(1_050);
-    expect(vi.getTimerCount()).toBe(0);
-  },
-);
-
+const nativeFailure = () => {
+  throw new Error("native cleanup failed");
+};
 it.each([
+  ["support failure", () => proc.supported.mockImplementationOnce(nativeFailure), 0],
+  ["inspection failure", () => proc.inspect.mockImplementationOnce(nativeFailure), 0],
+  ["wait failure", () => proc.wait.mockImplementationOnce(nativeFailure), 1],
   ["fresh native exit", () => proc.inspect.mockReturnValueOnce({ kind: "running" }), 0],
   ["pending wait", () => proc.wait.mockReturnValueOnce(null), 1],
 ] as const)("waits for %s before a paced retry", async (_, block, attempts) => {
@@ -249,18 +225,20 @@ it.each([
   expect(proc.wait).toHaveBeenCalledTimes(attempts);
   await vi.advanceTimersByTimeAsync(1);
   expect(proc.wait.mock.calls).toEqual(Array.from({ length: attempts + 1 }, () => [401]));
+  expect(proc.wait).toHaveLastReturnedWith({
+    pid: 401,
+    exitCode: 0,
+    signal: null,
+    signalNumber: null,
+  });
+  setProcesses([]);
+  await vi.advanceTimersByTimeAsync(1_050);
+  expect(vi.getTimerCount()).toBe(0);
 });
 it("settles a cooperative descendant throughout a longer command grace period", async () => {
-  const child = trackedRoot(true);
-  proc.alive.mockReturnValue(true);
   setProcesses([processRow(401, "S")]);
-  proc.wait.mockImplementation((pid) => {
-    proc.alive.mockReturnValue(false);
-    setProcesses([]);
-    return { pid, exitCode: 0, signal: null, signalNumber: null };
-  });
   const termination = createCommandTerminationController({
-    child,
+    child: trackedRoot(true),
     cancelController: new AbortController(),
     processTree: { mode: "graceful" },
     killGraceMs: 45_000,

@@ -15,6 +15,7 @@ it.each([
 ] as const)(
   "respawn lifetime preserves $lifetime completion through $transport",
   async ({ lifetime, transport }) => {
+    const preload = transport === "preload" ? ["--import", CLI_PARENT_BOUND_PRELOAD] : [];
     const source = `
       import { watchCliRespawnParent, getCliParentPid } from ${moduleUrl("../../cli-parent-lifetime.mjs")};
       watchCliRespawnParent();
@@ -24,31 +25,21 @@ it.each([
       process.send({ parent: getCliParentPid(), marker: process.env.OPENCLAW_CLI_RESPAWN_PARENT,
         inheritedPreload: process.execArgv.some(arg => arg.startsWith("data:text/javascript,")) });
     `;
-    const child = spawn(
-      resolveTestNodeExecPath(),
-      [
-        ...(transport === "preload" ? ["--import", CLI_PARENT_BOUND_PRELOAD] : []),
-        ...moduleArgs,
-        source,
-      ],
-      {
-        stdio: ["ignore", "pipe", "pipe", "ipc"],
-        env: {
-          ...process.env,
-          ...(transport === "env" ? { OPENCLAW_CLI_RESPAWN_PARENT: String(process.pid) } : {}),
-        },
+    const child = spawn(resolveTestNodeExecPath(), [...preload, ...moduleArgs, source], {
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+      env: {
+        ...process.env,
+        ...(transport === "env" ? { OPENCLAW_CLI_RESPAWN_PARENT: String(process.pid) } : {}),
       },
-    );
+    });
     let stdout = "";
     child.stdout?.on("data", (chunk) => {
       stdout += chunk;
     });
     const exited = once(child, "exit");
     try {
-      expect((await once(child, "message"))[0]).toEqual({
-        parent: process.pid,
-        inheritedPreload: false,
-      });
+      const [message] = await once(child, "message");
+      expect(message).toEqual({ parent: process.pid, inheritedPreload: false });
       if (lifetime === "parent-bound") {
         child.disconnect();
       }
@@ -87,10 +78,7 @@ it.runIf(process.platform !== "win32").each([
     const result = spawnSync(
       process.execPath,
       ["--import", import.meta.resolve("tsx"), ...moduleArgs, source],
-      {
-        encoding: "utf8",
-        timeout: 10_000,
-      },
+      { encoding: "utf8", timeout: 10_000 },
     );
     expect(result.error).toBeUndefined();
     expect(result.stdout).toBe("settled-output");
