@@ -1,4 +1,3 @@
-// Destructive lifecycle tests protect exact terminal ownership at the RPC boundary.
 import { expect, onTestFinished, test, vi } from "vitest";
 import { loadSessionEntry } from "../config/sessions/session-accessor.js";
 import { withPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
@@ -89,10 +88,9 @@ test.each(["archive", "incognito reset"] as const)(
 
     // Synchronize on the PTY action itself; cold RPC loading is not lifecycle timing.
     await Promise.race([drainStarted.promise, mutationPromise]);
-    expect(oldPty.killed).toBe(true);
     expect(mutationSettled).toBe(false);
     expect(manager.write("conn-1", oldSession.sessionId, "after-reset\n")).toBe(false);
-    expect(oldPty.writes).toEqual(["long-running-command\n"]);
+    expect(oldPty).toMatchObject({ killed: true, writes: ["long-running-command\n"] });
     await expect(
       manager.open(baseOpenRequest({ owner: oldOwner, createBackend: async () => makeFakePty() })),
     ).resolves.toMatchObject({ ok: false, code: "closed" });

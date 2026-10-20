@@ -16,6 +16,9 @@ installGatewayTestHooks({ scope: "suite" });
 
 test("named preferences stay profile-scoped over authenticated multi-agent Gateway RPC", async () => {
   const origin = "https://preferences.example.test";
+  const scopes = ["operator.read", "operator.write"];
+  const controlUi = { allowedOrigins: [origin] };
+  const readerRole = { agents: "*" as const, scopes, sessions: { others: "none" as const } };
   const auth = {
     mode: "trusted-proxy" as const,
     trustedProxy: {
@@ -25,24 +28,15 @@ test("named preferences stay profile-scoped over authenticated multi-agent Gatew
     },
   };
   testState.gatewayAuth = auth;
-  testState.gatewayControlUi = { allowedOrigins: [origin] };
+  testState.gatewayControlUi = controlUi;
   await writeConfigFile(
     {
       agents: { ownership: "explicit", entries: { research: {}, review: {} } },
       gateway: {
         auth,
         trustedProxies: ["127.0.0.1"],
-        controlUi: { allowedOrigins: [origin] },
-        roles: {
-          default: "reader",
-          definitions: {
-            reader: {
-              agents: "*",
-              scopes: ["operator.read", "operator.write"],
-              sessions: { others: "none" },
-            },
-          },
-        },
+        controlUi,
+        roles: { default: "reader", definitions: { reader: readerRole } },
       },
     },
     { allowedAgentRosterRemovals: ["main"] },
@@ -59,12 +53,12 @@ test("named preferences stay profile-scoped over authenticated multi-agent Gatew
         skipDefaultAuth: true,
         client: CONTROL_UI_CLIENT,
         prePairDevice: true,
-        scopes: ["operator.read", "operator.write"],
+        scopes,
         browserOrigin: origin,
       });
-      expect(connected.ok, JSON.stringify(connected.error)).toBe(true);
-      expect(connected.payload).toMatchObject({
-        auth: { method: "trusted-proxy", scopes: ["operator.read", "operator.write"] },
+      expect(connected, JSON.stringify(connected.error)).toMatchObject({
+        ok: true,
+        payload: { auth: { method: "trusted-proxy", scopes } },
       });
       const entries = {
         "ui.theme": "dark",
@@ -86,28 +80,23 @@ test("named preferences stay profile-scoped over authenticated multi-agent Gatew
           payload: { status: "ok", entries: { [key]: value } },
         });
       }
-      async function seedSession(name: string, profileId: string) {
+      const foreign = ensureProfileForEmail("foreign-owner@example.test");
+      const denied = { ok: false, error: { code: "INVALID_REQUEST" } };
+      for (const [name, owner, expected] of [
+        ["own", reader, { ok: true }],
+        ["foreign", foreign, denied],
+      ] as const) {
         const key = `agent:research:${name}`;
         await upsertSessionEntryCore(
           { agentId: "research", sessionKey: key },
           {
             sessionId: `${name}-session`,
             updatedAt: 1,
-            createdActor: { type: "human", source: "profile", id: profileId },
+            createdActor: { type: "human", source: "profile", id: owner.id },
           },
         );
-        return key;
+        expect(await rpcReq(socket, "sessions.preview", { keys: [key] })).toMatchObject(expected);
       }
-      const ownKey = await seedSession("own", reader.id);
-      expect(await rpcReq(socket, "sessions.preview", { keys: [ownKey] })).toMatchObject({
-        ok: true,
-      });
-      const other = ensureProfileForEmail("foreign-owner@example.test");
-      const key = await seedSession("foreign", other.id);
-      expect(await rpcReq(socket, "sessions.preview", { keys: [key] })).toMatchObject({
-        ok: false,
-        error: { code: "INVALID_REQUEST" },
-      });
     } finally {
       socket.close();
     }

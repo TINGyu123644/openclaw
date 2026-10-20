@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { beforeEach, expect, test, vi } from "vitest";
 import type { WebSocket } from "ws";
-import type { dispatchInboundMessage } from "../auto-reply/dispatch.js";
 import {
   markCommandReplyForDelivery,
   setReplyPayloadMetadata,
@@ -24,12 +23,8 @@ installConnectedControlUiServerSuite((started) => {
   ws = started.ws;
 });
 
-function roleAndText(messages: readonly { role: string }[]) {
-  return messages.map((message) => ({
-    role: message.role,
-    text: extractFirstTextBlock(message),
-  }));
-}
+const roleAndText = (messages: Iterable<{ role: string }>) =>
+  Array.from(messages, (message) => ({ role: message.role, text: extractFirstTextBlock(message) }));
 
 beforeEach(() => dispatchInboundMessageMock.mockReset());
 
@@ -44,8 +39,7 @@ test.each([
     try {
       const created = await rpcReq(ws, "sessions.create", { key: sessionKey, agentId: "main" });
       expect(created, JSON.stringify(created)).toMatchObject({ ok: true });
-      dispatchInboundMessageMock.mockImplementationOnce(async (args: unknown) => {
-        const { dispatcher } = args as Parameters<typeof dispatchInboundMessage>[0];
+      dispatchInboundMessageMock.mockImplementationOnce(async ({ dispatcher }) => {
         const finalPayload = { text: reply };
         const marked = kind === "pure" ? finalPayload : { text: reply };
         setReplyPayloadMetadata(marked, { contextFreeCommand: true });
@@ -93,7 +87,7 @@ test.each([
       assert(entry, `chat.send must create ${sessionKey}`);
       const modelContext = readSessionTranscriptContextMessages(
         { agentId, sessionId: entry.sessionId, sessionKey: canonicalKey, storePath },
-        (messages) => roleAndText([...messages]),
+        roleAndText,
       );
       expect(modelContext).toEqual(contextual ? exchange : []);
     } finally {

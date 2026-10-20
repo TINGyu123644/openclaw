@@ -3,8 +3,8 @@ import path from "node:path";
 import { expect, it } from "vitest";
 import { runQaGatewayFixture } from "../../test/helpers/qa-gateway-cleanup.js";
 import { getPublishedPreparedModelCatalogOwnerSnapshot } from "../agents/prepared-model-catalog.js";
-import { makeProviderModelFixture } from "../agents/test-helpers/provider-model-fixture.js";
 import { getRuntimeConfig } from "../config/config.js";
+import type { ModelProviderConfig } from "../config/types.models.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { deleteTestEnvValue, setTestEnvValue } from "../test-utils/env.js";
 import {
@@ -28,6 +28,21 @@ it.each(["native", "custom"] as const)(
         const token = randomUUID();
         setTestEnvValue("OPENCLAW_GATEWAY_TOKEN", token);
         const baseUrl = endpoint === "native" ? "https://api.x.ai/v1" : "https://custom.invalid/v1";
+        const personal: ModelProviderConfig = {
+          api: "openai-responses",
+          baseUrl,
+          apiKey: "synthetic-personal-key",
+          models: [
+            {
+              id: "auto",
+              name: "Auto",
+              reasoning: false,
+              input: ["text"],
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              maxTokens: 4096,
+            },
+          ],
+        };
         const cfg: OpenClawConfig = {
           agents: {
             defaults: {
@@ -38,26 +53,7 @@ it.each(["native", "custom"] as const)(
               modelPolicy: { allow: [] },
             },
           },
-          models: {
-            providers: {
-              personal: {
-                api: "openai-responses",
-                baseUrl,
-                apiKey: "synthetic-personal-key",
-                models: [
-                  makeProviderModelFixture<"openai-responses">({
-                    id: "auto",
-                    name: "Authored auto",
-                    provider: "personal",
-                    api: "openai-responses",
-                    baseUrl,
-                    contextWindow: 128000,
-                    maxTokens: 8192,
-                  }),
-                ].map(({ provider: _provider, ...model }) => model),
-              },
-            },
-          },
+          models: { providers: { personal } },
           plugins: { allow: ["xai"], entries: { xai: { enabled: true } } },
           gateway: { auth: { mode: "token", token } },
           hooks: { enabled: false },
@@ -68,6 +64,7 @@ it.each(["native", "custom"] as const)(
           configPath: await createGatewayConfigPath(home.tempHome),
         });
         await gateway.server.startupSettled;
+        const { client } = gateway;
         const owner = getPublishedPreparedModelCatalogOwnerSnapshot({
           config: getRuntimeConfig(),
           agentId: "main",
@@ -75,28 +72,27 @@ it.each(["native", "custom"] as const)(
         });
         expect(owner?.metadataSnapshot.plugins.some((plugin) => plugin.id === "xai")).toBe(true);
         type Row = { provider: string; id: string; available?: boolean };
-        const findModel = (rows: Row[]) =>
-          rows.find((row) => row.provider === "personal" && row.id === "auto");
-        for (const preparedOnly of [true, false]) {
-          for (const view of ["default", "configured"] as const) {
-            const response = await gateway.client.request<{ models: Row[] }>("models.list", {
-              view,
-              preparedOnly,
-            });
-            const model = findModel(response.models);
-            const context = JSON.stringify({ view, preparedOnly, model });
-            if (endpoint === "native") {
-              expect(model, context).toBeUndefined();
-            } else {
-              expect(model?.available, context).toBe(true);
-            }
+        for (const [view, preparedOnly] of [
+          ["default", true],
+          ["configured", true],
+          ["default", false],
+          ["configured", false],
+          ["provider-config", true],
+        ] as const) {
+          const { models } = await client.request<{ models: Row[] }>("models.list", {
+            view,
+            preparedOnly,
+          });
+          const model = models.find((row) => row.provider === "personal" && row.id === "auto");
+          const context = JSON.stringify({ view, preparedOnly, model });
+          if (view === "provider-config") {
+            expect(model?.id).toBe("auto");
+          } else if (endpoint === "native") {
+            expect(model, context).toBeUndefined();
+          } else {
+            expect(model?.available, context).toBe(true);
           }
         }
-        const admin = await gateway.client.request<{ models: Row[] }>("models.list", {
-          view: "provider-config",
-          preparedOnly: true,
-        });
-        expect(findModel(admin.models)?.id).toBe("auto");
       },
       () => gateway && disconnectGatewayClient(gateway.client),
       () => gateway?.server.close({ reason: "auto model-list proof complete" }),

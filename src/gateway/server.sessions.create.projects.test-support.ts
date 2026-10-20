@@ -25,25 +25,8 @@ async function addWorkspaceOrigin(workspace: string): Promise<void> {
   await git(workspace, "remote", "set-head", "origin", "main");
 }
 
-export async function createGitWorkspace(root: string): Promise<string> {
-  const workspace = path.join(root, "workspace");
-  await fs.mkdir(workspace, { recursive: true });
-  await git(workspace, "init", "-b", "main");
-  await fs.writeFile(path.join(workspace, "README.md"), "base\n");
-  await git(workspace, "add", "README.md");
-  await git(
-    workspace,
-    "-c",
-    "user.name=OpenClaw Test",
-    "-c",
-    "user.email=openclaw-test@example.invalid",
-    "commit",
-    "-m",
-    "initial",
-  );
-  await addWorkspaceOrigin(workspace);
-  return await fs.realpath(workspace);
-}
+export const createGitWorkspace = (root: string) =>
+  initializeRepository(root, "workspace", "base\n");
 
 export async function copyGitWorkspace(template: string, root: string): Promise<string> {
   const workspace = path.join(root, "workspace");
@@ -71,13 +54,13 @@ export const controlUiClient = {
   } as never,
 };
 
-export async function initializeRepository(root: string, name: string): Promise<string> {
+export async function initializeRepository(root: string, name: string, readme = `${name}\n`) {
   const repo = path.join(root, name);
   await fs.mkdir(repo, { recursive: true });
   await git(repo, "init", "-b", "main");
   await git(repo, "config", "user.name", "OpenClaw Tests");
   await git(repo, "config", "user.email", "tests@openclaw.invalid");
-  await fs.writeFile(path.join(repo, "README.md"), `${name}\n`);
+  await fs.writeFile(path.join(repo, "README.md"), readme);
   await git(repo, "add", "README.md");
   await git(repo, "commit", "-m", "initial");
   await addWorkspaceOrigin(repo);
@@ -85,14 +68,10 @@ export async function initializeRepository(root: string, name: string): Promise<
 }
 
 export async function settleWorkspaceRuns(
-  _context: unknown,
-  storePath: string,
-  sessionKey: string | undefined,
-  abort = false,
+  ...scope: Parameters<typeof waitForCreatedSessionRun>
 ): Promise<void> {
-  // Error paths revoke registration before persisting failure; the admission
-  // retains custody until all dispatch and title work finishes in this test store.
-  expect(await waitForCreatedSessionRun(_context, storePath, sessionKey, abort)).toBe(true);
+  // Admission retains dispatch/title custody even after error-path deregistration.
+  expect(await waitForCreatedSessionRun(...scope)).toBe(true);
 }
 
 export async function waitForCreatedSessionRun(
