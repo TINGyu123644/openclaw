@@ -1,19 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { expect, it } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { baseUrlTextInput, defineTokenCredential } from "./setup-credential.js";
 
-type DemoAccount = {
-  config: { token?: unknown; tokenFile?: string; baseUrl?: string };
-  token?: string;
-};
+type DemoConfig = { token?: unknown; tokenFile?: string; baseUrl?: string };
 
-const context = (config: DemoAccount["config"]) => ({
+const context = (config: DemoConfig) => ({
   cfg: { channels: { demo: config } } as OpenClawConfig,
   accountId: "default",
   credentialValues: {},
 });
-function resolveDemoAccount({ cfg }: { cfg: OpenClawConfig }): DemoAccount {
-  const config = (cfg.channels?.demo ?? {}) as DemoAccount["config"];
+function resolveDemoAccount({ cfg }: { cfg: OpenClawConfig }) {
+  const config = (cfg.channels?.demo ?? {}) as DemoConfig;
   return { config, token: typeof config.token === "string" ? config.token : undefined };
 }
 
@@ -24,54 +21,44 @@ function patchDemoConfig(params: {
 }): OpenClawConfig {
   const { cfg, patch, clearFields = [] } = params;
   const current = { ...((cfg.channels?.demo ?? {}) as Record<string, unknown>) };
-  for (const field of clearFields) {
-    delete current[field];
-  }
-  return {
-    ...cfg,
-    channels: { ...cfg.channels, demo: { ...current, ...patch } },
-  } as OpenClawConfig;
+  clearFields.forEach((field) => delete current[field]);
+  return context({ ...current, ...patch }).cfg;
 }
 
-describe("defineTokenCredential", () => {
-  const definition = defineTokenCredential({
-    inputKey: "token",
-    configKey: "token",
-    configuredFields: ["token", "tokenFile"],
-    providerHint: "demo",
-    credentialLabel: "token",
-    envPrompt: "env",
-    keepPrompt: "keep",
-    inputPrompt: "input",
-    resolveAccount: resolveDemoAccount,
-    resolvedValue: (account) => account.token,
-    envValue: () => "env-token",
-    patchAccount: patchDemoConfig,
-    useEnv: { clearFields: ["token", "tokenFile"] },
-    set: { clearFields: ["tokenFile"], value: "resolved" },
-  });
+const definition = defineTokenCredential({
+  inputKey: "token",
+  configKey: "token",
+  configuredFields: ["token", "tokenFile"],
+  providerHint: "demo",
+  credentialLabel: "token",
+  envPrompt: "env",
+  keepPrompt: "keep",
+  inputPrompt: "input",
+  resolveAccount: resolveDemoAccount,
+  resolvedValue: (account) => account.token,
+  envValue: () => "env-token",
+  patchAccount: patchDemoConfig,
+  useEnv: { clearFields: ["token", "tokenFile"] },
+  set: { clearFields: ["tokenFile"], value: "resolved" },
+});
 
-  it("inspects configured fields and resolved/env values", () => {
-    expect(definition.inspect(context({ tokenFile: "/tmp/token" }))).toEqual({
-      accountConfigured: true,
-      hasConfiguredValue: true,
-      resolvedValue: undefined,
-      envValue: "env-token",
-    });
+it("defineTokenCredential inspects configured fields and resolved/env values", () => {
+  expect(definition.inspect(context({ tokenFile: "/tmp/token" }))).toEqual({
+    accountConfigured: true,
+    hasConfiguredValue: true,
+    resolvedValue: undefined,
+    envValue: "env-token",
   });
+});
 
-  it("clears sibling fields for env and set writes", async () => {
-    const ctx = context({ token: "old", tokenFile: "/tmp/token", baseUrl: "https://demo" });
-    const envConfig = await definition.applyUseEnv?.(ctx);
-    expect(envConfig?.channels?.demo).toEqual({ baseUrl: "https://demo" });
-
-    const setConfig = await definition.applySet?.({
-      ...ctx,
-      value: "raw",
-      resolvedValue: "redacted",
-    });
-    expect(setConfig?.channels?.demo).toEqual({ token: "redacted", baseUrl: "https://demo" });
-  });
+it("clears sibling fields for env and set writes", async () => {
+  const ctx = context({ token: "old", tokenFile: "/tmp/token", baseUrl: "https://demo" });
+  const env = await definition.applyUseEnv?.(ctx);
+  const set = await definition.applySet?.({ ...ctx, value: "raw", resolvedValue: "redacted" });
+  expect([env?.channels?.demo, set?.channels?.demo]).toEqual([
+    { baseUrl: "https://demo" },
+    { token: "redacted", baseUrl: "https://demo" },
+  ]);
 });
 
 it("baseUrlTextInput wires current, normalize, validate, and patch behavior", async () => {
@@ -90,7 +77,7 @@ it("baseUrlTextInput wires current, normalize, validate, and patch behavior", as
   expect(await input.currentValue?.(ctx)).toBe("https://old");
   expect(input.validate?.({ ...ctx, value: "http://bad" })).toBe("https required");
   expect(input.normalizeValue?.({ ...ctx, value: " https://new/ " })).toBe("https://new");
-  expect(await input.applySet?.({ ...ctx, value: "https://new" })).toEqual({
-    channels: { demo: { baseUrl: "https://new" } },
-  });
+  expect(await input.applySet?.({ ...ctx, value: "https://new" })).toEqual(
+    context({ baseUrl: "https://new" }).cfg,
+  );
 });

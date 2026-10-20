@@ -41,15 +41,12 @@ function resolveAllowedOrigin(baseUrl: string, address: string, family: number) 
 it("ssrfPolicyFromAllowPrivateNetwork returns undefined when disabled", () => {
   expect(ssrfPolicyFromAllowPrivateNetwork(false)).toBeUndefined();
 });
+const nestedOptIn = { network: { dangerouslyAllowPrivateNetwork: true } };
 it("isPrivateNetworkOptInEnabled accepts nested dangerous opt-in config", () => {
-  expect(isPrivateNetworkOptInEnabled({ network: { dangerouslyAllowPrivateNetwork: true } })).toBe(
-    true,
-  );
+  expect(isPrivateNetworkOptInEnabled(nestedOptIn)).toBe(true);
 });
 it("ssrfPolicyFromPrivateNetworkOptIn returns the compat policy for nested input", () => {
-  expect(
-    ssrfPolicyFromPrivateNetworkOptIn({ network: { dangerouslyAllowPrivateNetwork: true } }),
-  ).toEqual({ allowPrivateNetwork: true });
+  expect(ssrfPolicyFromPrivateNetworkOptIn(nestedOptIn)).toEqual({ allowPrivateNetwork: true });
 });
 it("mergeSsrFPolicies returns undefined when no policy contributes values", () => {
   expect(mergeSsrFPolicies(undefined, {})).toBeUndefined();
