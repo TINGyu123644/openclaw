@@ -2,13 +2,12 @@ import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { clearMemoryPluginState } from "openclaw/plugin-sdk/memory-host-core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { resetMemoryToolMockState } from "./memory-tool-manager.test-mocks.js";
+import { recallResult } from "./recall-result.test-support.js";
+import type { recordShortTermRecalls } from "./short-term-promotion-record.js";
 import { createMemorySearchToolOrThrow } from "./tools.test-helpers.js";
 
-type RecordShortTermRecallsFn =
-  typeof import("./short-term-promotion-record.js").recordShortTermRecalls;
-
 const tracking = vi.hoisted(() => ({
-  record: vi.fn<RecordShortTermRecallsFn>(),
+  record: vi.fn<typeof recordShortTermRecalls>(),
   loads: 0,
   loaded: vi.fn<() => void>(),
 }));
@@ -18,15 +17,6 @@ vi.mock("./short-term-promotion-record.js", () => {
   tracking.loaded();
   return { recordShortTermRecalls: tracking.record };
 });
-
-const recallHit = {
-  path: "memory/2026-04-03.md",
-  startLine: 1,
-  endLine: 2,
-  score: 0.95,
-  snippet: "Move backups to S3 Glacier.",
-  source: "memory" as const,
-};
 
 function recall(dreaming: { enabled: boolean; timezone?: string }, userTimezone?: string) {
   return createMemorySearchToolOrThrow({
@@ -42,7 +32,7 @@ const expectHit = (result: Awaited<ReturnType<typeof recall>>) =>
 
 beforeEach(() => {
   clearMemoryPluginState();
-  resetMemoryToolMockState({ searchImpl: async () => [recallHit] });
+  resetMemoryToolMockState({ searchImpl: async () => [recallResult] });
   tracking.record.mockReset().mockResolvedValue(undefined);
 });
 afterEach(() => vi.restoreAllMocks());

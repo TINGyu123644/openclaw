@@ -2,11 +2,11 @@ import { createOpenClawTestState, type OpenClawTestState } from "openclaw/plugin
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { postgresProductScope } from "./postgres-product.test-support.js";
 import {
-  cancelStandingIntent,
+  cancelStandingIntent as cancel,
   createStandingIntent,
-  encodeStandingIntentChannelScope,
-  encodeStandingIntentSenderScope,
-  listStandingIntents,
+  encodeStandingIntentChannelScope as channelScope,
+  encodeStandingIntentSenderScope as senderScope,
+  listStandingIntents as list,
   matchStandingIntents,
 } from "./standing-intents.js";
 
@@ -63,13 +63,8 @@ describe.skipIf(!database.connection)("PostgreSQL standing intent product flow",
 
   it("filters channel, sender, lifecycle and agent before bounded candidate selection", async () => {
     const channel = (conversationId: string) =>
-      encodeStandingIntentChannelScope({
-        scope: "conversation",
-        provider: "discord",
-        conversationId,
-      });
-    const sender = (senderId: string) =>
-      encodeStandingIntentSenderScope({ provider: "discord", senderId });
+      channelScope({ scope: "conversation", provider: "discord", conversationId });
+    const sender = (senderId: string) => senderScope({ provider: "discord", senderId });
     for (let index = 0; index < 34; index++) {
       await create(
         `excluded ${index}`,
@@ -85,12 +80,10 @@ describe.skipIf(!database.connection)("PostgreSQL standing intent product flow",
     expect((await match()).map((intent) => intent.id)).toEqual([intended.id]);
     expect(await match()).toEqual([]);
     expect((await match({ nowMs: 3_000 })).map((intent) => intent.id)).toEqual([intended.id]);
-    const cancelled = await selected(() =>
-      cancelStandingIntent({ agentId: "main", id: intended.id }),
-    );
+    const cancelled = await selected(() => cancel({ agentId: "main", id: intended.id }));
     expect(cancelled).toMatchObject({ status: "cancelled" });
     expect(await match({ nowMs: 4_000 })).toEqual([]);
-    const listed = await selected(() => listStandingIntents({ agentId: "main", nowMs: 4_000 }));
+    const listed = await selected(() => list({ agentId: "main", nowMs: 4_000 }));
     expect(listed.find((intent) => intent.description === "expired")).toMatchObject({
       status: "expired",
     });

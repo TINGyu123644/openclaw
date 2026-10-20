@@ -13,6 +13,7 @@ import {
   writeMemoryCoreWorkspaceEntry,
 } from "./dreaming-state.js";
 import { withMemoryWorkspaceLock } from "./memory-workspace-lock.js";
+import { recallResult } from "./recall-result.test-support.js";
 import { rewindSessionBackfillIngestionState } from "./session-backfill-lifecycle.js";
 import { removeGroundedShortTermCandidates } from "./short-term-promotion-artifacts.js";
 import { recordShortTermRecalls } from "./short-term-promotion-record.js";
@@ -25,10 +26,7 @@ import {
 
 const { createTempWorkspace } = createMemoryCoreTestHarness();
 
-afterEach(async () => {
-  vi.useRealTimers();
-  await configureMemoryCoreDreamingStateForTests();
-});
+afterEach(() => configureMemoryCoreDreamingStateForTests());
 
 it.each([
   ["grounded rollback", "delete", PHASE, RECALL],
@@ -44,16 +42,7 @@ it.each([
         workspaceDir,
         query: "historical candidate",
         signalType: "grounded",
-        results: [
-          {
-            source: "memory",
-            path: "memory/2026-04-03.md",
-            startLine: 1,
-            endLine: 1,
-            snippet: "Keep a durable backup.",
-            score: 0.9,
-          },
-        ],
+        results: [recallResult],
       });
       const recall = await shortTermTestState.readRecallStore(
         workspaceDir,
@@ -118,26 +107,23 @@ it.each([
         delete: mutation === "delete" ? intercept(store.delete.bind(store)) : store.delete,
       };
     });
-    let rollbackSettled = false;
-    const rollback = run().catch((error: unknown) => {
-      rollbackSettled = true;
-      return error;
-    });
+    const settled = vi.fn();
+    const rollback = run()
+      .finally(settled)
+      .catch((error: unknown) => error);
     await firstFailureIssued.promise;
-    let nextWriterEntered = false;
-    const nextWriter = withMemoryWorkspaceLock(workspaceDir, async () => {
-      nextWriterEntered = true;
-    });
+    const nextWriterEntered = vi.fn(async () => {});
+    const nextWriter = withMemoryWorkspaceLock(workspaceDir, nextWriterEntered);
     vi.useFakeTimers();
     try {
       await vi.advanceTimersByTimeAsync(0);
-      expect([rollbackSettled, nextWriterEntered]).toEqual([false, false]);
+      expect([settled.mock.calls.length, nextWriterEntered.mock.calls.length]).toEqual([0, 0]);
     } finally {
       releaseSibling.resolve();
       vi.useRealTimers();
       await Promise.allSettled([rollback, nextWriter]);
     }
     expect(await rollback).toBe(failure);
-    expect(nextWriterEntered).toBe(true);
+    expect(nextWriterEntered).toHaveBeenCalledExactlyOnceWith();
   },
 );

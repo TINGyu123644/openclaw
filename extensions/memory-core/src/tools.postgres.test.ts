@@ -147,8 +147,8 @@ describe.skipIf(!database.connection)("PostgreSQL memory_search product flows", 
     }
   }
 
-  async function sync(agentId = "main", force = false) {
-    return await run(async () => {
+  const sync = (agentId = "main", force = false) =>
+    run(async () => {
       let manager = managers.get(agentId);
       if (!manager) {
         const result = await getMemorySearchManager({
@@ -163,13 +163,12 @@ describe.skipIf(!database.connection)("PostgreSQL memory_search product flows", 
       assert(manager.sync, "Expected a memory indexing manager");
       await manager.sync({ reason: "cli", force });
     });
-  }
 
-  async function search(
+  const search = (
     query: string,
     options: { agentId?: string; corpus?: "memory" | "sessions"; maxResults?: number } = {},
-  ) {
-    return await run(async () => {
+  ) =>
+    run(async () => {
       testing.resetMemorySearchToolCooldowns();
       const tool = createMemorySearchTool({
         config,
@@ -185,10 +184,9 @@ describe.skipIf(!database.connection)("PostgreSQL memory_search product flows", 
       });
       return result.details as Result;
     });
-  }
 
-  async function transcript(agentId: string, sessionId: string, text: string) {
-    return await run(async () => {
+  const transcript = (agentId: string, sessionId: string, text: string) =>
+    run(async () => {
       const target = {
         agentId,
         sessionKey: `agent:${agentId}:telegram:direct:${sessionId}`,
@@ -205,7 +203,6 @@ describe.skipIf(!database.connection)("PostgreSQL memory_search product flows", 
         },
       });
     });
-  }
 
   const paths = async (query: string, options?: Parameters<typeof search>[1]) =>
     (await search(query, options)).results.map((hit) => hit.path);
