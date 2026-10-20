@@ -72,9 +72,7 @@ export function bindSqliteWorkerBackend(
       attempt(() => backend.close());
       if (input.reportPath) {
         db.prepare = prepare;
-        for (const restore of restoreStatements) {
-          restore();
-        }
+        restoreStatements.forEach((restore) => restore());
       }
       attempt(() => {
         if (db.isOpen && input.trigger) {

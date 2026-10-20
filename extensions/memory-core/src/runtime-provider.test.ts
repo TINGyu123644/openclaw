@@ -1,34 +1,26 @@
 import type { MemorySearchResult } from "openclaw/plugin-sdk/memory-core-host-runtime-files";
 import { describe, expect, it, vi } from "vitest";
 
-const managerDebug = {
-  backend: "builtin" as const,
-  purpose: "default" as const,
-  managerMs: 7,
-};
+const managerDebug = { backend: "builtin", purpose: "default", managerMs: 7 } as const;
 
-const getMemorySearchManagerMock = vi.hoisted(() =>
-  vi.fn(async () => ({
-    manager: null,
-    debug: managerDebug,
-    error: undefined,
-  })),
-);
-const filterMemorySearchHitsBySessionVisibilityMock = vi.hoisted(() => vi.fn());
-const configureMemoryCoreDreamingStateMock = vi.hoisted(() => vi.fn());
+const mocks = vi.hoisted(() => ({
+  manager: vi.fn(async () => ({ manager: null, debug: managerDebug, error: undefined })),
+  authorize: vi.fn(),
+  configure: vi.fn(),
+}));
 
 vi.mock("./memory/index.js", () => ({
   closeAllMemorySearchManagers: vi.fn(async () => {}),
   closeMemorySearchManager: vi.fn(async () => {}),
-  getMemorySearchManager: getMemorySearchManagerMock,
+  getMemorySearchManager: mocks.manager,
 }));
 
 vi.mock("./session-search-visibility.js", () => ({
-  filterMemorySearchHitsBySessionVisibility: filterMemorySearchHitsBySessionVisibilityMock,
+  filterMemorySearchHitsBySessionVisibility: mocks.authorize,
 }));
 
 vi.mock("./dreaming-state.js", () => ({
-  configureMemoryCoreDreamingState: configureMemoryCoreDreamingStateMock,
+  configureMemoryCoreDreamingState: mocks.configure,
 }));
 
 import { runInMemoryTestBackgroundContext } from "./memory/background-context.test-support.js";
@@ -46,7 +38,7 @@ describe("memoryRuntime", () => {
       const request = { ...params, ...options };
       const result = await memoryRuntime.getMemorySearchManager(request);
       expect(result.debug).toEqual(managerDebug);
-      expect(getMemorySearchManagerMock).toHaveBeenCalledWith({
+      expect(mocks.manager).toHaveBeenCalledWith({
         ...request,
         runInBackgroundContext: runInMemoryTestBackgroundContext,
       });
@@ -65,17 +57,16 @@ describe("memoryRuntime", () => {
       ),
     );
     for (const request of requests) {
-      expect(getMemorySearchManagerMock).toHaveBeenCalledWith(request);
+      expect(mocks.manager).toHaveBeenCalledWith(request);
     }
   });
 
   it("binds the scoped state opener inside each lazy runtime instance", async () => {
     const openKeyedStore = vi.fn();
-    configureMemoryCoreDreamingStateMock.mockClear();
 
     await createMemoryRuntime({ openKeyedStore }).getMemorySearchManager(params);
 
-    expect(configureMemoryCoreDreamingStateMock).toHaveBeenCalledWith(openKeyedStore);
+    expect(mocks.configure).toHaveBeenCalledWith(openKeyedStore);
   });
 
   it("delegates raw-hit authorization to the canonical session visibility filter", async () => {
@@ -89,7 +80,7 @@ describe("memoryRuntime", () => {
         snippet: "private",
       },
     ];
-    filterMemorySearchHitsBySessionVisibilityMock.mockResolvedValue([]);
+    mocks.authorize.mockResolvedValue([]);
     const request = {
       ...params,
       requesterSessionKey: "agent:main:voice:15550001234",
@@ -97,6 +88,6 @@ describe("memoryRuntime", () => {
       hits,
     };
     await expect(memoryRuntime.authorizeSearchHits(request)).resolves.toEqual([]);
-    expect(filterMemorySearchHitsBySessionVisibilityMock).toHaveBeenCalledWith(request);
+    expect(mocks.authorize).toHaveBeenCalledWith(request);
   });
 });

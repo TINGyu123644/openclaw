@@ -34,8 +34,7 @@ function createLockStore(replacement?: ShortTermLockEntry) {
       if (intent.action === "delete") {
         return { status: rows.delete(key) ? "applied" : "unchanged" };
       }
-      rows.set(key, structuredClone(intent.value));
-      return { status: "applied" };
+      return unused();
     }),
     register: unused,
     registerIfAbsent: unused,

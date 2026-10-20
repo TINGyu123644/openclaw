@@ -23,10 +23,7 @@ function transcriptMessage({ role, content, timestamp, owner }: TranscriptMessag
   return { role, content, timestamp, ...(owner ? { __openclaw: { senderIsOwner: true } } : {}) };
 }
 
-export async function writeTranscript(
-  filePath: string,
-  messages: TranscriptMessage[],
-): Promise<void> {
+export async function writeTranscript(filePath: string, messages: TranscriptMessage[]) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const records = messages.map((message, index) => ({
     type: "message",
@@ -41,7 +38,7 @@ export async function seedCanonicalTranscript(
   sessionId: string,
   messages: TranscriptMessage[],
   metadata: Partial<Parameters<typeof upsertSessionEntry>[0]["entry"]> = {},
-): Promise<void> {
+) {
   const agentId = "main";
   const sessionsDir = resolveSessionTranscriptsDirForAgent(agentId);
   const storePath = path.join(sessionsDir, "sessions.json");
@@ -64,9 +61,7 @@ export async function seedCanonicalTranscript(
   await upsertSessionEntry({ ...session, entry });
 }
 
-export function hashStagedContent(
-  entries: Awaited<ReturnType<typeof readShortTermRecallEntries>>,
-): string {
+export function hashStagedContent(entries: Awaited<ReturnType<typeof readShortTermRecallEntries>>) {
   const content = entries
     .map(({ claimHash, provenance, snippet }) => ({ claimHash, provenance, snippet }))
     .toSorted((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
