@@ -52,63 +52,38 @@ describe("finalizeEmbeddedAttempt trajectory capture", () => {
     expectedFinalStatus: "success" | "error" | "interrupted",
     options: TerminalCaseOptions,
   ];
+  const ok = { kind: "ok" } as const;
+  const externalAbort = { kind: "aborted", source: "external" } as const;
+  const yieldAbort = { kind: "aborted", source: "yield_cleanup" } as const;
+  const failure = { source: "prompt", error: new Error("prompt failed") } as const;
+  const yielded = { last: "aborted", completed: "stop", yielded: true } as const;
+  const timeout = { kind: "timeout", phase: "prompt", source: "runtime" } as const;
 
   it.each<TerminalCase>([
-    ["current over stale", { kind: "ok" }, "stop", "stop", "success", { last: "aborted" }],
-    ["normal completion", { kind: "ok" }, "length", "stop", "success", { completed: "stop" }],
-    // The fixture assistant carries visible text, which finalization promotes
-    // to terminal text for a length stop, so this is a delivered partial
-    // reply and the trajectory must record it as success.
-    ["length truncation with visible text", { kind: "ok" }, "length", "length", "success", {}],
-    [
-      "yield plus prompt timeout",
-      { kind: "timeout", phase: "prompt", source: "runtime" },
-      "stop",
-      undefined,
-      "interrupted",
-      { last: "aborted", completed: "stop", yielded: true },
-    ],
-    [
-      "yield plus external abort",
-      { kind: "aborted", source: "external" },
-      "stop",
-      "aborted",
-      "interrupted",
-      { last: "aborted", completed: "stop", yielded: true },
-    ],
+    ["current over stale", ok, "stop", "stop", "success", { last: "aborted" }],
+    ["normal completion", ok, "length", "stop", "success", { completed: "stop" }],
+    // Visible fallback text makes a length stop a delivered partial reply.
+    ["length truncation with visible text", ok, "length", "length", "success", {}],
+    ["yield plus prompt timeout", timeout, "stop", undefined, "interrupted", yielded],
+    ["yield plus external abort", externalAbort, "stop", "aborted", "interrupted", yielded],
     [
       "external abort over prompt failure",
-      {
-        kind: "aborted",
-        source: "external",
-        failure: { source: "prompt", error: new Error("prompt failed") },
-      },
+      { ...externalAbort, failure },
       "stop",
       "aborted",
       "interrupted",
       {},
     ],
-    ["partial provider error", { kind: "ok" }, "error", "error", "error", { texts: ["x"] }],
+    ["partial provider error", ok, "error", "error", "error", { texts: ["x"] }],
     [
       "yield cleanup plus prompt failure",
-      {
-        kind: "aborted",
-        source: "yield_cleanup",
-        failure: { source: "prompt", error: new Error("prompt failed") },
-      },
+      { ...yieldAbort, failure },
       "error",
       undefined,
       "error",
-      { last: "aborted", completed: "stop", yielded: true },
+      yielded,
     ],
-    [
-      "yield over completed assistant",
-      { kind: "aborted", source: "yield_cleanup" },
-      "length",
-      "end_turn",
-      "success",
-      { last: "aborted", completed: "stop", yielded: true },
-    ],
+    ["yield over completed assistant", yieldAbort, "length", "end_turn", "success", yielded],
   ])(
     "%s",
     (_name, terminal, currentStopReason, expectedStopReason, expectedFinalStatus, options) => {
@@ -123,10 +98,10 @@ describe("finalizeEmbeddedAttempt trajectory capture", () => {
         yieldDetected: options.yielded,
       });
 
-      expect(events["model.completed"]).toHaveProperty("stopReason", expectedStopReason);
-      expect(events["trace.artifacts"]).toHaveProperty("stopReason", expectedStopReason);
+      for (const name of ["model.completed", "trace.artifacts", "session.ended"]) {
+        expect(events[name]).toHaveProperty("stopReason", expectedStopReason);
+      }
       expect(events["trace.artifacts"]).toHaveProperty("finalStatus", expectedFinalStatus);
-      expect(events["session.ended"]).toHaveProperty("stopReason", expectedStopReason);
     },
   );
 

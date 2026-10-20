@@ -1,36 +1,20 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ExecAutoReviewTranscript } from "../../../infra/exec-auto-review.js";
 import type { createOpenClawCodingTools } from "../../agent-tools.js";
 import { makeAgentAssistantMessage } from "../../test-helpers/agent-message-fixtures.js";
-import {
-  cleanupTempPaths,
-  createContextEngineAttemptRunner,
-  createContextEngineBootstrapAndAssemble,
-  createDefaultEmbeddedSession,
-  getHoisted,
-  preloadRunEmbeddedAttemptForTests,
-  resetEmbeddedAttemptHarness,
-} from "./attempt-spawn-workspace.test-support.js";
-
-const hoisted = getHoisted();
-const tempPaths: string[] = [];
+import { useContextEngineAttemptHarness } from "./attempt-context-engine.test-support.js";
+import { createDefaultEmbeddedSession } from "./attempt-spawn-workspace.test-support.js";
 
 describe("embedded exec review conversation ownership", () => {
-  beforeAll(preloadRunEmbeddedAttemptForTests);
-  beforeEach(() => resetEmbeddedAttemptHarness());
-  afterEach(async () => {
-    await cleanupTempPaths(tempPaths);
-    tempPaths.length = 0;
-  });
+  const { hoisted, runAttempt } = useContextEngineAttemptHarness(
+    "agent:main:exec-review-transcript",
+  );
 
   it("reads live messages and releases the review transcript after prompt failure", async () => {
     let reviewTranscript: (() => ExecAutoReviewTranscript | undefined) | undefined;
     const atDispose = vi.fn();
     const seen: ExecAutoReviewTranscript[] = [];
-    await createContextEngineAttemptRunner({
-      contextEngine: createContextEngineBootstrapAndAssemble(),
-      sessionKey: "agent:main:exec-review-transcript",
-      tempPaths,
+    await runAttempt({
       sessionMessages: [],
       attemptOverrides: {
         disableTools: false,

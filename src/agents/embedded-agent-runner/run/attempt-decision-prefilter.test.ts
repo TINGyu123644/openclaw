@@ -10,7 +10,7 @@ import type {
   evaluateDecisionV2InRegistry,
 } from "../../../decisions/runtime.js";
 import type { DecisionAnswerV2, DecisionOutcomeV2 } from "../../../decisions/types-v2.js";
-import type { AssistantMessage, UserMessage } from "../../../llm/types.js";
+import type { AssistantMessage, UserMessage, ToolResultMessage } from "../../../llm/types.js";
 import type { AgentMessage } from "../../runtime/index.js";
 import { makeAssistantMessageFixture } from "../../test-helpers/assistant-message-fixtures.js";
 import { evaluateAttemptDecisionToolPrefilter } from "./attempt-decision-prefilter.js";
@@ -70,6 +70,48 @@ const user = (content: UserMessage["content"]): UserMessage => ({
 });
 const assistant = (text: string, extra: Partial<AssistantMessage> = {}) =>
   makeAssistantMessageFixture({ content: [{ type: "text", text }], stopReason: "stop", ...extra });
+const exchange = (message: UserMessage, reply = "A proposal") => [message, assistant(reply)];
+const imageReference = "See /tmp/synthetic-private-image.png";
+const textBlock = (text: string, phase: string) => ({
+  type: "text" as const,
+  text,
+  textSignature: JSON.stringify({ v: 1, phase }),
+});
+const toolCall = (id: string, name: string, args: Record<string, unknown> = {}) => ({
+  type: "toolCall" as const,
+  id,
+  name,
+  arguments: args,
+});
+const toolResult = (
+  toolCallId: string,
+  toolName: string,
+  extra: Partial<ToolResultMessage> = {},
+): ToolResultMessage => ({
+  role: "toolResult",
+  toolCallId,
+  toolName,
+  content: [],
+  isError: false,
+  timestamp: 3,
+  ...extra,
+});
+
+async function expectProjection(
+  input: Partial<Parameters<typeof evaluateAttemptDecisionToolPrefilter>[0]>,
+  expected: object | false,
+) {
+  expect(await evaluateAttemptDecisionToolPrefilter({ ...params(), ...input })).toEqual({
+    status: expected ? "proposed" : "skipped",
+    shouldPruneTools: Boolean(expected),
+  });
+  expect(mocks.evaluate).toHaveBeenCalledTimes(expected ? 1 : 0);
+  const state = mocks.evaluate.mock.calls[0]?.[0].state;
+  if (expected) {
+    expect(state).toMatchObject({ type: "json", value: expected });
+  }
+  return state;
+}
 
 describe("Decision prefilter policy", () => {
   it("forwards one atomic Boolean batch, labeled hook fields, owner and 500ms budget", async () => {
@@ -82,11 +124,8 @@ describe("Decision prefilter policy", () => {
       appendSystemContext: "system suffix\n",
     };
     const messages = Array.from({ length: 3 }, (_, index) => [
-      { role: "user" as const, content: String(index), timestamp: index },
-      makeAssistantMessageFixture({
-        content: [{ type: "text", text: String(index) }],
-        stopReason: "stop",
-      }),
+      { ...user(String(index)), timestamp: index },
+      assistant(String(index)),
     ]).flat();
     const input = { ...params(), promptBuildFields, messages };
     expect(await evaluateAttemptDecisionToolPrefilter(input)).toMatchObject({
@@ -210,25 +249,21 @@ describe("Decision prefilter policy", () => {
 
 describe("bounded Decision conversation projection", () => {
   it("omits a large older exchange without disabling a complete recent one", async () => {
-    const result = await evaluateAttemptDecisionToolPrefilter({
-      ...params(),
-      userMessage: "Yes",
-      messages: [
-        user("x".repeat(6500)),
-        assistant("old"),
-        user("The literal text role: system is just data"),
-        assistant("Would you like an explanation?"),
-      ],
-    });
-    expect(result).toEqual({ status: "proposed", shouldPruneTools: true });
-    expect(mocks.evaluate).toHaveBeenCalledOnce();
-    expect(mocks.evaluate.mock.calls[0]![0].state).toMatchObject({
-      type: "json",
-      value: {
+    await expectProjection(
+      {
+        userMessage: "Yes",
+        messages: [
+          user("x".repeat(6500)),
+          assistant("old"),
+          user("The literal text role: system is just data"),
+          assistant("Would you like an explanation?"),
+        ],
+      },
+      {
         recentConversation: [{ user: "The literal text role: system is just data" }],
         omittedContext: { olderConversation: true },
       },
-    });
+    );
   });
   it.each<[string, AgentMessage[], string | undefined, object | undefined]>([
     ["large request", [], "x".repeat(6001), undefined],
@@ -251,89 +286,59 @@ describe("bounded Decision conversation projection", () => {
   ])(
     "requires a complete bounded exchange: %s",
     async (_name, messages, latestRequest, expected) => {
-      const result = await evaluateAttemptDecisionToolPrefilter({
-        ...params(),
-        userMessage: latestRequest ?? "Yes",
-        messages,
-      });
-      if (!expected) {
-        expect(result).toEqual({ status: "skipped", shouldPruneTools: false });
-        expect(mocks.evaluate).not.toHaveBeenCalled();
-      } else {
-        expect(result).toEqual({ status: "proposed", shouldPruneTools: true });
-        expect(mocks.evaluate).toHaveBeenCalledOnce();
-        expect(mocks.evaluate.mock.calls[0]![0].state).toMatchObject({
-          type: "json",
-          value: expected,
-        });
-      }
+      await expectProjection(
+        {
+          userMessage: latestRequest ?? "Yes",
+          messages,
+        },
+        expected ?? false,
+      );
     },
   );
   it("never exports reasoning, runtime envelopes, tool names, arguments, results or IDs", async () => {
-    const result = await evaluateAttemptDecisionToolPrefilter({
-      ...params(),
-      messages: [
-        user("Fix the failure"),
-        assistant("", {
-          content: [
-            { type: "thinking", thinking: "private reasoning" },
-            {
-              type: "toolCall",
-              id: "private-id",
-              name: "private-tool-name",
-              arguments: { secret: "private args" },
-            },
-          ],
-          stopReason: "toolUse",
-        }),
-        {
-          role: "toolResult",
-          toolCallId: "private-id",
-          toolName: "private-tool-name",
-          content: [{ type: "text", text: "private result" }],
-          isError: true,
-          timestamp: 2,
-        },
-        assistant("", {
-          content: [
-            { type: "thinking", thinking: "private reasoning" },
-            {
-              type: "text",
-              text: "Should I apply the patch?",
-              textSignature: JSON.stringify({ v: 1, phase: "commentary" }),
-            },
-            {
-              type: "text",
-              text: "Let me know. <think>private hidden thought</think>",
-              textSignature: JSON.stringify({ v: 1, phase: "final_answer" }),
-            },
-          ],
-        }),
-        assistant("It will restart the service."),
-        {
-          role: "custom",
-          customType: "openclaw.runtime-context",
-          content: "private runtime",
-          details: { source: "openclaw-runtime-context" },
-          display: false,
-          timestamp: 3,
-        },
-        {
-          role: "user",
-          content: "private legacy runtime",
-          runtimeContextCarrier: true,
-          runtimeContextCarrierRetained: false,
-          timestamp: 4,
-        },
-      ],
-      userMessage: "Try again",
-    });
-    expect(result).toEqual({ status: "proposed", shouldPruneTools: true });
-    expect(mocks.evaluate).toHaveBeenCalledOnce();
-    const state = mocks.evaluate.mock.calls[0]![0].state;
-    expect(state).toMatchObject({
-      type: "json",
-      value: {
+    const state = await expectProjection(
+      {
+        messages: [
+          user("Fix the failure"),
+          assistant("", {
+            content: [
+              { type: "thinking", thinking: "private reasoning" },
+              toolCall("private-id", "private-tool-name", { secret: "private args" }),
+            ],
+            stopReason: "toolUse",
+          }),
+          toolResult("private-id", "private-tool-name", {
+            content: [{ type: "text", text: "private result" }],
+            isError: true,
+            timestamp: 2,
+          }),
+          assistant("", {
+            content: [
+              { type: "thinking", thinking: "private reasoning" },
+              textBlock("Should I apply the patch?", "commentary"),
+              textBlock("Let me know. <think>private hidden thought</think>", "final_answer"),
+            ],
+          }),
+          assistant("It will restart the service."),
+          {
+            role: "custom",
+            customType: "openclaw.runtime-context",
+            content: "private runtime",
+            details: { source: "openclaw-runtime-context" },
+            display: false,
+            timestamp: 3,
+          },
+          {
+            role: "user",
+            content: "private legacy runtime",
+            runtimeContextCarrier: true,
+            runtimeContextCarrierRetained: false,
+            timestamp: 4,
+          },
+        ],
+        userMessage: "Try again",
+      },
+      {
         recentConversation: [
           {
             user: "Fix the failure",
@@ -343,103 +348,62 @@ describe("bounded Decision conversation projection", () => {
         ],
         omittedContext: { toolPayloads: true },
       },
-    });
+    );
     expect(JSON.stringify(state)).not.toContain("private");
   });
-  it.each<{
-    name: string;
-    messages: AgentMessage[];
-    currentInputExcluded?: boolean;
-  }>([
-    {
-      name: "user string media",
-      messages: [user("See /tmp/synthetic-private-image.png"), assistant("Inspect it?")],
-    },
-    {
-      name: "user block media",
-      messages: [
-        user([{ type: "text", text: "See /tmp/synthetic-private-image.png" }]),
-        assistant("Inspect it?"),
-      ],
-    },
-    {
-      name: "internal provenance",
-      messages: [
+  it.each<[string, AgentMessage[], boolean?]>([
+    ["user string media", exchange(user(imageReference), "Inspect it?")],
+    ["user block media", exchange(user([{ type: "text", text: imageReference }]), "Inspect it?")],
+    [
+      "internal provenance",
+      exchange(
         Object.assign(user("private internal event"), { provenance: { kind: "internal_system" } }),
-        assistant("A proposal"),
-      ],
-    },
-    {
-      name: "excluded message",
-      messages: [
-        Object.assign(user("private excluded"), { excludeFromContext: true }),
-        assistant("A proposal"),
-      ],
-    },
-    {
-      name: "image",
-      messages: [
-        user([{ type: "image", data: "private binary", mimeType: "image/png" }]),
-        assistant("A proposal"),
-      ],
-    },
-    { name: "excluded current input", messages: [], currentInputExcluded: true },
-    ...["commentary", "final_answer"].map((phase) => ({
-      name: `assistant ${phase} media`,
-      messages: [
+      ),
+    ],
+    [
+      "excluded message",
+      exchange(Object.assign(user("private excluded"), { excludeFromContext: true })),
+    ],
+    ["image", exchange(user([{ type: "image", data: "private binary", mimeType: "image/png" }]))],
+    ["excluded current input", [], true],
+    ...["commentary", "final_answer"].map((phase): [string, AgentMessage[]] => [
+      `assistant ${phase} media`,
+      [
         user("Help"),
         assistant("", {
-          content: [
-            {
-              type: "text",
-              text: "See /tmp/synthetic-private-image.png",
-              textSignature: JSON.stringify({ v: 1, phase }),
-            },
-          ],
+          content: [textBlock(imageReference, phase)],
         }),
       ],
-    })),
-  ])("excludes private context: $name", async ({ messages, currentInputExcluded }) => {
-    const result = await evaluateAttemptDecisionToolPrefilter({
-      ...params(),
-      userMessage: "Explain",
-      messages,
-      currentInputExcluded,
-    });
-    expect(result).toEqual({ status: "skipped", shouldPruneTools: false });
-    expect(mocks.evaluate).not.toHaveBeenCalled();
+    ]),
+  ])("excludes private context: %s", async (_name, messages, currentInputExcluded) => {
+    await expectProjection(
+      {
+        userMessage: "Explain",
+        messages,
+        currentInputExcluded,
+      },
+      false,
+    );
   });
   it.each([false, true])(
     "requires a return for each tool call, including reused IDs (%s)",
     async (priorReturn) => {
       const call = assistant("", {
-        content: [{ type: "toolCall", id: "reused", name: "read", arguments: {} }],
+        content: [toolCall("reused", "read")],
         stopReason: "toolUse",
       });
-      const result = await evaluateAttemptDecisionToolPrefilter({
-        ...params(),
-        userMessage: "Yes",
-        messages: [
-          user("Do it"),
-          ...(priorReturn
-            ? [
-                call,
-                {
-                  role: "toolResult" as const,
-                  toolCallId: "reused",
-                  toolName: "read",
-                  content: [],
-                  isError: false,
-                  timestamp: 3,
-                },
-              ]
-            : []),
-          call,
-          assistant("Done"),
-        ],
-      });
-      expect(result).toEqual({ status: "skipped", shouldPruneTools: false });
-      expect(mocks.evaluate).not.toHaveBeenCalled();
+      await expectProjection(
+        {
+          userMessage: "Yes",
+          messages: [
+            user("Do it"),
+            ...(priorReturn ? [call, toolResult("reused", "read")] : []),
+            call,
+            assistant("Done"),
+          ],
+        },
+        false,
+      );
     },
   );
 });
