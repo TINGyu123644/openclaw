@@ -16,9 +16,7 @@ const mock = vi.hoisted(() => {
 });
 vi.mock("../infra/worker-task-server.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/worker-task-server.js")>()),
-  serveOwnedWorkerTasks: (handler: (input: unknown) => Promise<OpenClawStateReadReply>) => {
-    mock.handler.mockImplementation(handler);
-  },
+  serveOwnedWorkerTasks: mock.handler.mockImplementation.bind(mock.handler),
 }));
 vi.mock("./backup-run-records.kernel.js", async (importOriginal) => {
   mock.unrelatedHandlerLoaded = true;
@@ -40,7 +38,6 @@ vi.mock("../infra/gateway-owner-lease.worker.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/gateway-owner-lease.worker.js")>()),
   inspectGatewayOwnerLease: (_source: unknown, onAdmitted: () => void) => {
     onAdmitted();
-    return undefined;
   },
 }));
 vi.mock("./openclaw-state-db-read-connection.js", () => ({

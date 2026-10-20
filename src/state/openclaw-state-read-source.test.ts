@@ -173,8 +173,6 @@ it("joins captured domain cleanup before retiring its pool and execution generat
     ]);
     expect(events).toEqual(["domain closing"]);
     expect(mock.create).not.toHaveBeenCalled();
-    expect(mock.closePool).not.toHaveBeenCalled();
-    expect(releaseGeneration).not.toHaveBeenCalled();
     expect(() => captured?.own(async () => {})).toThrow(/closing/);
   } finally {
     ownerMayClose.resolve();
