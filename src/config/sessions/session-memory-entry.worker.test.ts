@@ -13,11 +13,9 @@ import { replaceTranscriptEventsSync } from "./session-accessor.sqlite-transcrip
 import { collectSessionMemoryEntries } from "./session-memory-entry.worker.test-support.js";
 
 type Scope = Parameters<typeof replaceTranscriptEventsSync>[0];
-const userEvent = (id: string, content: string) => ({
-  type: "message",
-  id,
-  message: { role: "user", content },
-});
+function userEvent(id: string, content: string) {
+  return { type: "message", id, message: { role: "user", content } };
+}
 function replace(scope: Scope, events: ReturnType<typeof userEvent>[]) {
   expect(replaceTranscriptEventsSync(scope, events)).toBe(true);
 }

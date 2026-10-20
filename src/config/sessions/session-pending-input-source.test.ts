@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, assert, beforeEach, expect, it } from "vitest";
+import { afterEach, assert, expect, it } from "vitest";
 import { MAX_PAYLOAD_BYTES } from "../../gateway/payload-limits.js";
 import type { PersistedUserTurnMessage } from "../../sessions/user-turn-transcript.types.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
@@ -28,7 +28,8 @@ const message = (runId: string, content = "Synthetic source"): PersistedUserTurn
   timestamp: 100,
   idempotencyKey: `${runId}:user`,
 });
-const stage = async (runId: string) => {
+const stage = async (runId: string, committed = false) => {
+  await upsertSessionEntryCore(scope(), { sessionId, updatedAt: 1 });
   const receipt = await stageSessionPendingInput(scope(), {
     runId,
     message: message(runId),
@@ -36,10 +37,11 @@ const stage = async (runId: string) => {
   });
   assert(receipt, "Expected staged source");
   receipts.push(receipt);
+  if (committed) {
+    await receipt.run(() => appendTranscriptMessage(scope(), { message: receipt.message }));
+  }
   return receipt;
 };
-const promote = (receipt: SessionPendingInputReceipt) =>
-  receipt.run(() => appendTranscriptMessage(scope(), { message: receipt.message }));
 async function readOnly<T>(run: () => Promise<T>) {
   const db = database().db;
   db.exec("PRAGMA query_only = ON");
@@ -49,9 +51,6 @@ async function readOnly<T>(run: () => Promise<T>) {
     db.exec("PRAGMA query_only = OFF");
   }
 }
-beforeEach(async () => {
-  await upsertSessionEntryCore(scope(), { sessionId, updatedAt: 1 });
-});
 afterEach(async () => {
   for (const receipt of receipts) {
     receipt.finish("interrupted");
@@ -69,10 +68,7 @@ it("does not create missing storage for a submitted-input lookup", async () => {
 it.each(["pending", "committed"] as const)(
   "rejects malformed or oversized %s source bytes without changing storage",
   async (source) => {
-    const receipt = await stage("invalid-source");
-    if (source === "committed") {
-      await promote(receipt);
-    }
+    const receipt = await stage("invalid-source", source === "committed");
     const db = database().db;
     const invalidMessages = [
       "{",
@@ -110,8 +106,7 @@ it.each([
   { projection: "missing", set: null },
   { projection: "lagging", set: "indexed_seq = -1" },
 ])("does not read or repair a $projection transcript identity projection", async ({ set }) => {
-  const receipt = await stage("stale-source");
-  await promote(receipt);
+  await stage("stale-source", true);
   const db = database().db;
   db.prepare(
     set

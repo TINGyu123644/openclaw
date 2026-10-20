@@ -7,12 +7,10 @@ import {
   type ModelContextRequest,
 } from "./session-model-context-window.js";
 
-const entryBase = (seq: number) => ({
-  seq,
-  id: `entry-${seq}`,
-  parentId: seq > 0 ? `entry-${seq - 1}` : null,
-  timestamp: "2026-01-01T00:00:00.000Z",
-});
+const timestamp = "2026-01-01T00:00:00.000Z";
+function entryBase(seq: number) {
+  return { seq, id: `entry-${seq}`, parentId: seq > 0 ? `entry-${seq - 1}` : null, timestamp };
+}
 const request = (seq: number, message: AgentMessage): ModelContextRequest => ({
   entry: { ...entryBase(seq), type: "message", message },
   omitCheckpoint: false,

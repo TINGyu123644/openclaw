@@ -16,11 +16,9 @@ import { addSessionMember, removeSessionMember } from "./session-sharing-store.j
 import { loadSessionTranscriptEvents as loadTranscriptEvents } from "./session-transcript-events.js";
 
 const profileState = { scenario: "minimal", prepareProfileCatalog: true } as const;
-const session = (agentId: string, sessionId: string) => ({
-  agentId,
-  sessionId,
-  sessionKey: `agent:${agentId}:${sessionId}`,
-});
+function session(agentId: string, sessionId: string) {
+  return { agentId, sessionId, sessionKey: `agent:${agentId}:${sessionId}` };
+}
 
 it.each([false, true])(
   "retains foreign input authority through transcript rewrite (revoked: %s)",
@@ -28,9 +26,9 @@ it.each([false, true])(
     await withOpenClawTestState(profileState, async (state) => {
       const cfg = rolePolicyConfig();
       setRuntimeConfigSnapshot(cfg);
-      const client = roleClient("view", "foreign-mirror-member");
+      const client = roleClient("view", "member");
       const profileId = expectDefined(client.authenticatedUserProfile, "fixture profile").profileId;
-      const source = session("main", "foreign-mirror-source");
+      const source = session("main", "source");
       await upsertSessionEntryCore(source, {
         sessionId: source.sessionId,
         updatedAt: 1,
@@ -49,12 +47,12 @@ it.each([false, true])(
       const authorization = expectDefined(resolved.authorization, "source authorization");
       const receipt = expectDefined(
         await stageSessionPendingInput(source, {
-          runId: "foreign-mirror",
+          runId: "foreign",
           message: {
             role: "user",
-            content: "Accepted source input",
+            content: "Accepted",
             timestamp: 2,
-            idempotencyKey: "foreign-mirror:user",
+            idempotencyKey: "foreign:user",
           },
           assertCurrent: authorization.assertCurrent,
           assertAdmittedCurrent: authorization.assertCurrent,
@@ -64,17 +62,13 @@ it.each([false, true])(
       );
       try {
         const target = {
-          ...session("other", "foreign-mirror-target"),
+          ...session("other", "target"),
           storePath: path.join(state.agentDir("other"), "openclaw-agent.sqlite"),
         };
         await upsertSessionEntryCore(target, { sessionId: target.sessionId, updatedAt: 1 });
         const manager = await SessionManager.openAsync(target, state.workspaceDir);
         const earlierId = expectDefined(
-          await manager.appendMessageAsync({
-            role: "user",
-            content: "Earlier destination input",
-            timestamp: 1,
-          }),
+          await manager.appendMessageAsync({ role: "user", content: "Earlier", timestamp: 1 }),
           "destination entry",
         );
         const sourceSnapshot = async () => ({
