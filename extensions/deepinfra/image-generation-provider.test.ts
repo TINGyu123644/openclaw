@@ -15,6 +15,12 @@ const {
 } = getProviderHttpMocks();
 
 installProviderHttpMockCleanup();
+const model = "black-forest-labs/FLUX-1-schnell";
+const baseUrl = "https://api.deepinfra.com/v1/openai";
+const imageResponse = (bytes: Buffer, revised_prompt?: string) => ({
+  response: Response.json({ data: [{ b64_json: bytes.toString("base64"), revised_prompt }] }),
+  release: vi.fn(async () => {}),
+});
 
 describe("deepinfra image generation provider", () => {
   beforeEach(() => {
@@ -28,46 +34,33 @@ describe("deepinfra image generation provider", () => {
   it("declares generation and single-reference edit support", () => {
     const provider = buildDeepInfraImageGenerationProvider();
 
-    expect(provider.id).toBe("deepinfra");
-    expect(provider.defaultModel).toBe("black-forest-labs/FLUX-1-schnell");
-    expect(provider.models).toEqual([
-      "black-forest-labs/FLUX-1-schnell",
-      "black-forest-labs/FLUX-1-dev",
-      "Qwen/Qwen-Image-Max",
-      "stabilityai/sdxl-turbo",
-    ]);
-    expect(provider.capabilities.generate.maxCount).toBe(4);
-    expect(provider.capabilities.edit.enabled).toBe(true);
-    expect(provider.capabilities.edit.maxInputImages).toBe(1);
+    expect(provider).toMatchObject({
+      id: "deepinfra",
+      defaultModel: model,
+      models: [
+        model,
+        "black-forest-labs/FLUX-1-dev",
+        "Qwen/Qwen-Image-Max",
+        "stabilityai/sdxl-turbo",
+      ],
+      capabilities: { generate: { maxCount: 4 }, edit: { enabled: true, maxInputImages: 1 } },
+    });
   });
 
   it("sends OpenAI-compatible image generation requests and sniffs JPEG output", async () => {
-    const release = vi.fn(async () => {});
     const jpegBytes = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
-    postJsonRequestMock.mockImplementation(async () => ({
-      response: Response.json({
-        data: [{ b64_json: jpegBytes.toString("base64"), revised_prompt: "red square" }],
-      }),
-      release,
-    }));
+    const response = imageResponse(jpegBytes, "red square");
+    postJsonRequestMock.mockResolvedValue(response);
 
     const provider = buildDeepInfraImageGenerationProvider();
     const result = await provider.generateImage({
       provider: "deepinfra",
-      model: "deepinfra/black-forest-labs/FLUX-1-schnell",
+      model: `deepinfra/${model}`,
       prompt: "red square",
       count: 2,
       size: "512x512",
       timeoutMs: 12_345,
-      cfg: {
-        models: {
-          providers: {
-            deepinfra: {
-              baseUrl: "https://api.deepinfra.com/v1/openai/",
-            },
-          },
-        },
-      } as never,
+      cfg: { models: { providers: { deepinfra: { baseUrl: `${baseUrl}/` } } } } as never,
     });
 
     expect(resolveProviderHttpRequestConfigMock).toHaveBeenCalledWith(
@@ -75,7 +68,7 @@ describe("deepinfra image generation provider", () => {
         provider: "deepinfra",
         capability: "image",
         transport: "http",
-        defaultBaseUrl: "https://api.deepinfra.com/v1/openai",
+        defaultBaseUrl: baseUrl,
         allowPrivateNetwork: false,
       }),
     );
@@ -91,11 +84,11 @@ describe("deepinfra image generation provider", () => {
       "content-type": "application/json",
     });
     expect(jsonRequest).toEqual({
-      url: "https://api.deepinfra.com/v1/openai/images/generations",
+      url: `${baseUrl}/images/generations`,
       headers: jsonRequestHeaders,
       timeoutMs: 12_345,
       body: {
-        model: "black-forest-labs/FLUX-1-schnell",
+        model,
         prompt: "red square",
         n: 2,
         size: "512x512",
@@ -105,38 +98,26 @@ describe("deepinfra image generation provider", () => {
       allowPrivateNetwork: false,
       dispatcherPolicy: undefined,
     });
-    expect(result.images).toHaveLength(1);
-    const [firstImage] = result.images;
-    if (!firstImage) {
-      throw new Error("Expected generated DeepInfra image");
-    }
-    expect(firstImage).toEqual({
-      buffer: jpegBytes,
-      mimeType: "image/jpeg",
-      fileName: "image-1.jpg",
-      revisedPrompt: "red square",
-    });
-    expect(release).toHaveBeenCalledOnce();
+    expect(result.images).toEqual([
+      {
+        buffer: jpegBytes,
+        mimeType: "image/jpeg",
+        fileName: "image-1.jpg",
+        revisedPrompt: "red square",
+      },
+    ]);
+    expect(response.release).toHaveBeenCalledOnce();
   });
 
   it("sends image edits as multipart OpenAI-compatible requests", async () => {
-    postMultipartRequestMock.mockImplementation(async () => ({
-      response: Response.json({
-        data: [
-          {
-            b64_json: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString(
-              "base64",
-            ),
-          },
-        ],
-      }),
-      release: vi.fn(async () => {}),
-    }));
+    postMultipartRequestMock.mockResolvedValue(
+      imageResponse(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+    );
 
     const provider = buildDeepInfraImageGenerationProvider();
     const result = await provider.generateImage({
       provider: "deepinfra",
-      model: "black-forest-labs/FLUX-1-schnell",
+      model,
       prompt: "make it neon",
       inputImages: [{ buffer: Buffer.from("source"), mimeType: "image/png" }],
       cfg: {} as never,
@@ -154,7 +135,7 @@ describe("deepinfra image generation provider", () => {
     });
     const form = Reflect.get(multipartRequest, "body") as FormData;
     expect(multipartRequest).toEqual({
-      url: "https://api.deepinfra.com/v1/openai/images/edits",
+      url: `${baseUrl}/images/edits`,
       headers: multipartHeaders,
       body: form,
       timeoutMs: undefined,
@@ -162,15 +143,12 @@ describe("deepinfra image generation provider", () => {
       allowPrivateNetwork: false,
       dispatcherPolicy: undefined,
     });
-    expect(form.get("model")).toBe("black-forest-labs/FLUX-1-schnell");
-    expect(form.get("prompt")).toBe("make it neon");
-    expect(form.get("response_format")).toBe("b64_json");
+    expect(["model", "prompt", "response_format"].map((key) => form.get(key))).toEqual([
+      model,
+      "make it neon",
+      "b64_json",
+    ]);
     expect(form.get("image")).toBeInstanceOf(File);
-    expect(result.images).toHaveLength(1);
-    const [image] = result.images;
-    if (!image) {
-      throw new Error("Expected edited DeepInfra image");
-    }
-    expect(image.mimeType).toBe("image/png");
+    expect(result.images).toMatchObject([{ mimeType: "image/png" }]);
   });
 });
