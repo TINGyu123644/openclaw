@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import type { PluginRecord } from "openclaw/plugin-sdk/plugin-test-runtime";
 import "../test-support/browser-security.mock.js";
 import { beforeEach, expect, it, vi } from "vitest";
 
@@ -7,13 +8,7 @@ const mocks = vi.hoisted(() => ({
   loadConfig: vi.fn<() => OpenClawConfig>(() => ({})),
   sourceConfig: null as OpenClawConfig | null,
   pluginRecord: undefined as
-    | {
-        id: string;
-        status: "disabled" | "error" | "loaded";
-        activationReason?: string;
-        error?: string;
-        failurePhase?: "validation" | "load" | "register";
-      }
+    | Pick<PluginRecord, "id" | "status" | "activationReason" | "error" | "failurePhase">
     | undefined,
   startBrowserControlServiceFromConfig: vi.fn<() => Promise<null>>(async () => null),
   dispatch: vi.fn(),

@@ -29,19 +29,14 @@ function registration(overrides: Partial<BrowserExtensionStatus["registrations"]
     ...overrides,
   };
 }
-function installation(overrides: Partial<BrowserExtensionStatus> = {}): BrowserExtensionStatus {
+function installation(overrides: Partial<BrowserExtensionStatus> = {}) {
   return {
     platform: "linux",
     platformSupport: "automatic",
-    installedCopy: { path: "/private/copy", present: true, owned: true },
-    bundledPath: "/private/bundle",
-    approvedPaths: [],
     discovered: [],
     storeDiscovered: [],
     storeInstallRequests: [],
     registrations: [registration()],
-    manualSetupRequired: true,
-    issues: [],
     ...overrides,
   };
 }
@@ -140,21 +135,18 @@ it("proves the exact local profile even when configured Gateway uses an SSH loop
   expectRedacted(result);
 });
 
-it.each(["missing key", "connection error"])(
-  "reports %s without leaking credentials",
-  async (failure) => {
-    if (failure === "missing key") {
-      mocks.readToken.mockReturnValue(null);
-    } else {
+it.each([false, true])(
+  "reports an unavailable relay without leaking credentials; has key: %s",
+  async (hasKey) => {
+    mocks.readToken.mockReturnValue(hasKey ? "synthetic-private-relay-key" : null);
+    if (hasKey) {
       mocks.connect.mockRejectedValue(new Error("synthetic-private-relay-key"));
     }
     const result = await setup("verify");
     expect(result).toMatchObject({ connection: { state: "unavailable" } });
     expectRedacted(result);
     expect(mocks.install).not.toHaveBeenCalled();
-    if (failure === "missing key") {
-      expect(mocks.connect).not.toHaveBeenCalled();
-    }
+    expect(mocks.connect).toHaveBeenCalledTimes(hasKey ? 1 : 0);
   },
 );
 

@@ -24,11 +24,10 @@ function setup() {
     platform: "win32" as const,
     windowsNative: { platform: f.ops, context: f.context, executable: f.executable, manage },
   };
-  const validate = (manifestPath = f.installation.manifestPath) =>
+  const validate = () =>
     host.validateWindowsNativeContext(
       {
-        manifestPath,
-        launcherPath: f.installation.launcherPath,
+        ...f.installation,
         expectedOrigins: [WINDOWS_OFFICIAL_ORIGIN],
       },
       deps,

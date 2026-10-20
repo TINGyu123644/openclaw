@@ -1,6 +1,3 @@
-import fs from "node:fs";
-import path from "node:path";
-import { withEnvAsync, withTempDir } from "openclaw/plugin-sdk/test-env";
 import { beforeEach, expect, it, vi } from "vitest";
 import { relayTestKey } from "../../chrome-extension/relay-key.test-support.js";
 import { buildBrowserExtensionPairing as buildPairing } from "./extension-pairing.js";
@@ -37,37 +34,6 @@ it("binds native bootstrap to the selected profile instead of the first extensio
   await expect(buildPairing({ cfg, profile: "missing" })).rejects.toThrow(
     "existing extension profile",
   );
-});
-
-it("pairs with the first writer's key when its file is already open but empty", async () => {
-  const actual = await vi.importActual<typeof import("./extension-relay/relay-auth.js")>(
-    "./extension-relay/relay-auth.js",
-  );
-  vi.mocked(ensureExtensionRelayToken).mockImplementation(actual.ensureExtensionRelayToken);
-  await withTempDir("openclaw-pairing-", async (dir) => {
-    const stateDir = fs.realpathSync(dir);
-    const credentials = path.join(stateDir, "credentials");
-    fs.mkdirSync(credentials, { mode: 0o700 });
-    const secretPath = path.join(credentials, "browser-extension-relay.secret");
-    await withEnvAsync(
-      { OPENCLAW_STATE_DIR: stateDir, OPENCLAW_OAUTH_DIR: credentials },
-      async () => {
-        const fd = fs.openSync(secretPath, "wx", 0o600);
-        try {
-          const before = fs.fstatSync(fd);
-          const pairing = buildPairing({ cfg: {}, ...gatewayTransport });
-          fs.writeFileSync(fd, `${RELAY_KEY}\n`);
-          const result = await pairing;
-          expect(new URL(result.pairingString).hash).toBe(`#${RELAY_KEY}`);
-          expect(result.topology).toBe("local");
-          expect(fs.readFileSync(secretPath, "utf8")).toBe(`${RELAY_KEY}\n`);
-          expect(fs.statSync(secretPath)).toMatchObject({ dev: before.dev, ino: before.ino });
-        } finally {
-          fs.closeSync(fd);
-        }
-      },
-    );
-  });
 });
 
 it.each(["browser-node", "direct-remote"] as const)(

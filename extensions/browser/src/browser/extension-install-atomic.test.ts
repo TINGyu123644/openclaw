@@ -30,15 +30,13 @@ it.each(["launcher", "manifest"] as const)(
       profile: "Default",
       entries: { [FOUNDATION_STORE_ID]: { location: 1, from_webstore: true } },
     });
-    const install = (deps = value.deps) =>
-      installChromeExtensionBootstrap({
-        bundledDir: value.bundledDir,
-        pluginRoot: value.pluginRoot,
-        waitMs: 1_000,
-        requestStoreInstall: false,
-        deps,
-      });
-    const before = await install();
+    const params = {
+      bundledDir: value.bundledDir,
+      pluginRoot: value.pluginRoot,
+      waitMs: 1_000,
+      requestStoreInstall: false,
+    };
+    const before = await installChromeExtensionBootstrap({ ...params, deps: value.deps });
     expect(before.issues).toEqual([]);
     const registration = before.registrations.find((entry) => entry.product === "chrome");
     assert(registration, "missing Chrome fixture registration");
@@ -64,25 +62,23 @@ it.each(["launcher", "manifest"] as const)(
       await rename(source, destination);
     });
 
-    const failed = await install(deps);
+    const failed = await installChromeExtensionBootstrap({ ...params, deps });
     renameSpy.mockRestore();
     expect(failed.issues.join("\n")).toContain("native host publication failed");
     expect(await fs.readFile(targetPath, "utf8")).toBe(targetBytes);
     expect.soft(await list(directory)).toEqual(entries);
 
-    const retried = await install(deps);
+    const retried = await installChromeExtensionBootstrap({ ...params, deps });
     expect(retried).toMatchObject({ issues: [], manualSetupRequired: false });
     expect(retried.registrations).toEqual(before.registrations);
     const current = await readManifest(registration.manifestPath);
     expect(await fs.readFile(current.path, "utf8")).toContain(nativeHostPath);
-    expect(await list(directory)).toEqual(
-      target === "launcher"
-        ? [
-            ...entries.filter((entry) => entry !== path.basename(manifest.path)),
-            path.basename(current.path),
-          ].toSorted()
-        : entries,
-    );
+    const oldLauncher = path.basename(manifest.path);
+    const newLauncher = path.basename(current.path);
+    const replaced = entries
+      .map((entry) => (entry === oldLauncher ? newLauncher : entry))
+      .toSorted();
+    expect(await list(directory)).toEqual(target === "launcher" ? replaced : entries);
     await expect(fs.stat(manifest.path)).rejects.toMatchObject({ code: "ENOENT" });
     if (process.platform !== "win32") {
       expect((await fs.stat(registration.manifestPath)).mode & 0o777).toBe(0o600);

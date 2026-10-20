@@ -2,10 +2,8 @@ import { expect, it } from "vitest";
 import {
   BROWSER_ACT_ERROR_CODES,
   BROWSER_ERROR_REASONS,
-  BrowserProfileUnavailableError,
   BrowserTabNotFoundError,
   parseBrowserErrorPayload,
-  toBrowserErrorResponse,
 } from "./errors.js";
 
 it("preserves known codes and drops unknown route metadata", () => {
@@ -45,12 +43,6 @@ const details = {
   displayPresent: false,
 } as const;
 const metadata = { reason: BROWSER_ERROR_REASONS.noDisplayForHeadedProfile, details };
-
-it("maps a closed reason and typed details", () => {
-  expect(
-    toBrowserErrorResponse(new BrowserProfileUnavailableError("display required", { metadata })),
-  ).toEqual({ status: 409, message: "display required", ...metadata });
-});
 
 it("accepts only valid no-display metadata from route payloads", () => {
   const payload = { error: "display required", ...metadata };

@@ -118,7 +118,6 @@ export function windowsFixture() {
   return {
     context,
     identity,
-    dir,
     installation,
     executable,
     files,

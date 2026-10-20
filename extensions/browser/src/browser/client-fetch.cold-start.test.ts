@@ -48,11 +48,7 @@ function setup() {
     await vi.advanceTimersByTimeAsync(31_000);
     ready.resolve(running);
   };
-  const expectRunning = () => {
-    expect(state.profiles.get("openclaw")?.running).toBe(running);
-    expect(launchOpenClawChrome).toHaveBeenCalledOnce();
-  };
-  return { state, entered, finishStartup, expectRunning };
+  return { state, entered, finishStartup, running };
 }
 
 afterEach(() => {
@@ -64,7 +60,7 @@ afterEach(() => {
 it.each([false, true])(
   "shares startup beyond the action budget; cancel first caller: %s",
   async (cancel) => {
-    const { entered, finishStartup, expectRunning } = setup();
+    const { entered, finishStartup, state, running } = setup();
     const caller = new AbortController();
     const first = startBrowser(caller.signal);
     const result = first.catch((error: unknown) => error);
@@ -80,7 +76,8 @@ it.each([false, true])(
     expect(await next).toEqual(started);
     expect(await tabs).toEqual({ running: true, tabs: [], canAutoResizeViewport: true });
     await expect(startBrowser()).resolves.toEqual(started);
-    expectRunning();
+    expect(state.profiles.get("openclaw")?.running).toBe(running);
+    expect(launchOpenClawChrome).toHaveBeenCalledOnce();
   },
 );
 
