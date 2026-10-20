@@ -9,34 +9,38 @@ import { serveWorkspaceSkills } from "./workspace-worker.js";
 const temporary = useAutoCleanupTempDirTracker(afterEach);
 
 it("uses the native dependency recipe validator without any source paths", async () => {
-  const f = fixture();
-  const output = new PassThrough();
-  let result = "";
-  output.on("data", (chunk: Buffer) => {
-    result += chunk.toString();
+  const { invoke, messages } = fixture();
+  await invoke("installDependencies", {
+    skillKey: "test",
+    spec: { kind: "node", package: "--not-a-package" },
+    preferences: { nodeManager: "npm", preferBrew: false },
+    timeoutMs: 1000,
   });
-  await serveWorkspaceSkills({
-    ...f,
-    operation: "installDependencies",
-    input: Readable.from([
-      JSON.stringify({
-        skillKey: "test",
-        spec: { kind: "node", package: "--not-a-package" },
-        preferences: { nodeManager: "npm", preferBrew: false },
-        timeoutMs: 1000,
-      }),
-    ]),
-    output,
-  });
-  expect(JSON.parse(result)).toMatchObject({
-    ok: false,
-    message: "node package value is empty or starts with a dash",
-  });
+  expect(messages).toMatchObject([
+    {
+      ok: false,
+      message: "node package value is empty or starts with a dash",
+    },
+  ]);
 });
 
 function fixture() {
   const home = temporary.make("skills-worker-");
-  return { home, workspace: path.join(home, "workspace") };
+  const workspace = path.join(home, "workspace");
+  const output = new PassThrough();
+  const messages: unknown[] = [];
+  output.on("data", (chunk: Buffer) => messages.push(JSON.parse(chunk.toString())));
+  const run = (operation: string, input: Readable) =>
+    serveWorkspaceSkills({ home, workspace, operation, input, output });
+  return {
+    home,
+    workspace,
+    output,
+    messages,
+    run,
+    invoke: (operation: string, request: unknown) =>
+      run(operation, Readable.from([JSON.stringify(request)])),
+  };
 }
 
 it.each([false, true])(
@@ -47,22 +51,17 @@ it.each([false, true])(
     await fs.mkdir(extractedRoot, { recursive: true });
     await fs.writeFile(path.join(extractedRoot, "SKILL.md"), "# Test skill\n");
     const input = new PassThrough();
-    const output = new PassThrough();
-    const messages: unknown[] = [];
+    const { messages } = f;
     const prepared = new Promise<void>((resolve) => {
-      output.once("data", (chunk: Buffer) => {
-        messages.push(JSON.parse(chunk.toString()));
-        resolve();
-      });
+      f.output.once("data", () => resolve());
     });
-    const run = serveWorkspaceSkills({ ...f, operation: "applyRoot", input, output });
+    const run = f.run("applyRoot", input);
     input.write(`${JSON.stringify({ extractedRoot, slug: "test", mode: "install" })}\n`);
     await prepared;
     expect(messages).toEqual([{ type: "prepared", mode: "install" }]);
     await expect(fs.stat(path.join(f.workspace, "skills/test"))).rejects.toMatchObject({
       code: "ENOENT",
     });
-    output.on("data", (chunk: Buffer) => messages.push(JSON.parse(chunk.toString())));
     input.end(
       `${JSON.stringify({ decision: allowed ? null : { error: "Denied by policy", failureKind: "invalid-request" } })}\n`,
     );
@@ -93,18 +92,12 @@ it.each([
   async ({ operation, error }) => {
     const f = fixture();
     await expect(
-      serveWorkspaceSkills({
-        ...f,
+      f.invoke(
         operation,
-        input: Readable.from([
-          JSON.stringify(
-            operation === "discovery"
-              ? { sourcePlan: { workspaceDir: path.join(f.home, "other") } }
-              : {},
-          ),
-        ]),
-        output: new PassThrough(),
-      }),
+        operation === "discovery"
+          ? { sourcePlan: { workspaceDir: path.join(f.home, "other") } }
+          : {},
+      ),
     ).rejects.toThrow(error);
   },
 );

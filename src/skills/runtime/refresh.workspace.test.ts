@@ -63,6 +63,45 @@ async function waitForSkillsTurn() {
   });
 }
 
+async function snapshot(params: Parameters<typeof resolveReusableWorkspaceSkillSnapshot>[0]) {
+  return (await resolveReusableWorkspaceSkillSnapshot(params)).snapshot;
+}
+
+function watchWorker(workspace: string, output: Writable) {
+  const input = new PassThrough();
+  const task = serveWorkspaceSkills({
+    workspace,
+    home: workspace,
+    operation: "watch",
+    input,
+    output,
+  });
+  const start = () =>
+    input.write(
+      JSON.stringify({
+        sourcePlan: resolveWorkspaceSkillSourcePlan(workspace, { workspaceOnly: true }),
+      }) + "\n",
+    );
+  return { input, task, start };
+}
+
+async function expectRetirementPending(
+  task: Promise<void>,
+  subscription: { signal: AbortSignal; end: () => void },
+) {
+  let settled = false;
+  const joined = task.then(() => {
+    settled = true;
+  });
+  await waitForSkillsTurn();
+  expect(subscription.signal.aborted).toBe(true);
+  expect(settled).toBe(false);
+  return async () => {
+    subscription.end();
+    await joined;
+  };
+}
+
 it("retires remote subscriptions during Gateway drain and reacquires after runtime reset", async () => {
   const { params, subscriptions, access, gateway } = await remoteFixture();
   await resolveReusableWorkspaceSkillSnapshot(params);
@@ -235,52 +274,36 @@ it("joins remote replacement, disposal, and shutdown before releasing their call
   };
   try {
     await remoteRefresh.ensureRemoteSkillsWatcher(params);
-    let replaced = false;
-    const replacement = Promise.resolve(
+    const finishReplacement = await expectRetirementPending(
       remoteRefresh.ensureRemoteSkillsWatcher({
         ...params,
         executionWorkspaceDir: "/remote/replacement",
       }),
-    ).then(() => {
-      replaced = true;
-    });
-    await waitForSkillsTurn();
-    expect(subscriptions[0]!.signal.aborted).toBe(true);
-    expect(replaced).toBe(false);
+      subscriptions[0]!,
+    );
     expect(access.watchSkills).toHaveBeenCalledTimes(1);
     const retiredVersion = getSkillsSnapshotVersion(gateway);
     subscriptions[0]!.emit("unavailable");
     expect(getSkillsSnapshotVersion(gateway)).toBe(retiredVersion);
-    subscriptions[0]!.end();
-    await replacement;
+    await finishReplacement();
     expect(access.watchSkills).toHaveBeenCalledTimes(2);
 
-    let disposed = false;
-    const disposal = refresh
-      .ensureSkillsWatcher({
+    const finishDisposal = await expectRetirementPending(
+      refresh.ensureSkillsWatcher({
         workspaceDir: gateway,
         sourcePlan: params.sourcePlan,
         config: { plugins: { enabled: false }, skills: { load: { watch: false } } },
-      })
-      .then(() => {
-        disposed = true;
-      });
-    await waitForSkillsTurn();
-    expect(subscriptions[1]!.signal.aborted).toBe(true);
-    expect(disposed).toBe(false);
-    subscriptions[1]!.end();
-    await disposal;
+      }),
+      subscriptions[1]!,
+    );
+    await finishDisposal();
 
     await remoteRefresh.ensureRemoteSkillsWatcher(params);
-    let closed = false;
-    const closing = remoteRefresh.closeRemoteSkillsWatchers().then(() => {
-      closed = true;
-    });
-    await waitForSkillsTurn();
-    expect(subscriptions[2]!.signal.aborted).toBe(true);
-    expect(closed).toBe(false);
-    subscriptions[2]!.end();
-    await closing;
+    const finishClosing = await expectRetirementPending(
+      remoteRefresh.closeRemoteSkillsWatchers(),
+      subscriptions[2]!,
+    );
+    await finishClosing();
   } finally {
     fixtureOptions.finishOnAbort = true;
     subscriptions.forEach(({ end }) => end());
@@ -289,36 +312,27 @@ it("joins remote replacement, disposal, and shutdown before releasing their call
 
 it("restores snapshot reuse only on verified availability, without adding a content revision", async () => {
   const { params, subscriptions, access, writes, gateway } = await remoteFixture();
-  let snapshot = (await resolveReusableWorkspaceSkillSnapshot(params)).snapshot;
+  let saved = await snapshot(params);
   const subscription = subscriptions[0]!;
   subscription.emit("unavailable");
   await writes("Reconciled during outage");
   subscription.emit("change");
-  snapshot = (
-    await resolveReusableWorkspaceSkillSnapshot({ ...params, existingSnapshot: snapshot })
-  ).snapshot;
+  saved = await snapshot({ ...params, existingSnapshot: saved });
   const afterChange = access.loadSkills.mock.calls.length;
-  snapshot = (
-    await resolveReusableWorkspaceSkillSnapshot({ ...params, existingSnapshot: snapshot })
-  ).snapshot;
+  saved = await snapshot({ ...params, existingSnapshot: saved });
   expect(access.loadSkills).toHaveBeenCalledTimes(afterChange + 1);
   const version = getSkillsSnapshotVersion(gateway);
   subscription.emit("available");
   expect(getSkillsSnapshotVersion(gateway)).toBe(version);
-  expect(
-    (await resolveReusableWorkspaceSkillSnapshot({ ...params, existingSnapshot: snapshot }))
-      .snapshot,
-  ).toBe(snapshot);
+  expect(await snapshot({ ...params, existingSnapshot: saved })).toBe(saved);
   expect(access.loadSkills).toHaveBeenCalledTimes(afterChange + 1);
   await writes("Changed under recovered coverage");
   subscription.emit("change");
-  snapshot = (
-    await resolveReusableWorkspaceSkillSnapshot({ ...params, existingSnapshot: snapshot })
-  ).snapshot;
-  expect(snapshot.prompt).toContain("Changed under recovered coverage");
+  saved = await snapshot({ ...params, existingSnapshot: saved });
+  expect(saved.prompt).toContain("Changed under recovered coverage");
   expect(access.loadSkills).toHaveBeenCalledTimes(afterChange + 2);
   subscription.emit("unavailable");
-  await resolveReusableWorkspaceSkillSnapshot({ ...params, existingSnapshot: snapshot });
+  await snapshot({ ...params, existingSnapshot: saved });
   expect(access.loadSkills).toHaveBeenCalledTimes(afterChange + 3);
   expect(access.watchSkills).toHaveBeenCalledOnce();
 });
@@ -330,7 +344,6 @@ it("publishes initial availability and completed skill changes through the worke
     name: "guide",
     description: "Worker content",
   });
-  const input = new PassThrough();
   const output = new PassThrough();
   const messages: unknown[] = [];
   const ready = createDeferred();
@@ -346,18 +359,8 @@ it("publishes initial availability and completed skill changes through the worke
       }
     }
   });
-  const task = serveWorkspaceSkills({
-    workspace,
-    home: workspace,
-    operation: "watch",
-    input,
-    output,
-  });
-  input.write(
-    JSON.stringify({
-      sourcePlan: resolveWorkspaceSkillSourcePlan(workspace, { workspaceOnly: true }),
-    }) + "\n",
-  );
+  const { input, task, start } = watchWorker(workspace, output);
+  start();
   await ready.promise;
   expect(messages).toContain("available");
   await writeSkill({
@@ -384,15 +387,15 @@ it("refreshes Gateway Workshop edits alongside the existing host subscription", 
     writeSkill({ dir: path.join(workshop, "authored"), name: "authored", description });
   await write("Original Workshop instructions");
   const request = { ...params, config, agentId: "main" };
-  const first = await resolveReusableWorkspaceSkillSnapshot(request);
-  expect(first.snapshot.prompt).toContain("Original Workshop instructions");
+  const first = await snapshot(request);
+  expect(first.prompt).toContain("Original Workshop instructions");
   await write("Updated Workshop instructions");
   await refresh.refreshSkillsDiscovery({ workspaceDir: gateway, reason: "workshop" });
-  const updated = await resolveReusableWorkspaceSkillSnapshot({
+  const updated = await snapshot({
     ...request,
-    existingSnapshot: first.snapshot,
+    existingSnapshot: first,
   });
-  expect(updated.snapshot.prompt).toContain("Updated Workshop instructions");
+  expect(updated.prompt).toContain("Updated Workshop instructions");
   expect(access.watchSkills).toHaveBeenCalledTimes(1);
   expect(subscriptions[0]!.signal.aborted).toBe(false);
   await refresh.ensureSkillsWatcher({
@@ -422,7 +425,6 @@ it("reacquires a closed transport and rejects late events after binding retireme
 
 it("joins accepted stdout writes after retiring skill discovery", async () => {
   const workspace = await fixture.createFixtureDirectory("skills-watch-stdout");
-  const input = new PassThrough();
   const written = createDeferred();
   const retired = createDeferred();
   let blocked = true;
@@ -444,13 +446,7 @@ it("joins accepted stdout writes after retiring skill discovery", async () => {
     void pending.then(retired.resolve, retired.reject);
     return pending;
   });
-  const worker = serveWorkspaceSkills({
-    workspace,
-    home: workspace,
-    operation: "watch",
-    input,
-    output,
-  });
+  const { input, task: worker, start } = watchWorker(workspace, output);
   let finished = false;
   void worker.then(
     () => {
@@ -461,11 +457,7 @@ it("joins accepted stdout writes after retiring skill discovery", async () => {
     },
   );
   try {
-    input.write(
-      JSON.stringify({
-        sourcePlan: resolveWorkspaceSkillSourcePlan(workspace, { workspaceOnly: true }),
-      }) + "\n",
-    );
+    start();
     await written.promise;
     expect(output.writableNeedDrain).toBe(true);
     input.end();
@@ -501,32 +493,30 @@ it("keeps canonical Gateway roots local through discovery, refresh, and host cha
     executionWorkspaceDir: canonical,
     executionWorkspaceFileHost: "gateway" as const,
   };
-  let snapshot = (await resolveReusableWorkspaceSkillSnapshot(canonicalParams)).snapshot;
-  expect(snapshot.resolvedSkills?.find((skill) => skill.name === "guide")?.description).toBe(
+  let saved = await snapshot(canonicalParams);
+  expect(saved.resolvedSkills?.find((skill) => skill.name === "guide")?.description).toBe(
     "Original host instructions",
   );
-  const projectSkill = snapshot.resolvedSkills?.find((skill) => skill.name === "project");
+  const projectSkill = saved.resolvedSkills?.find((skill) => skill.name === "project");
   expect(projectSkill).toMatchObject({ filePath: path.join(project, "SKILL.md") });
   expect(resolveSkillFileHost(projectSkill!)).toBe("gateway");
   expect(access.loadSkills.mock.lastCall?.[0].executionWorkspaceDir).toBeUndefined();
   expect(access.watchSkills.mock.lastCall?.[0].executionWorkspaceDir).toBeUndefined();
   await writeSkill({ dir: project, name: "project", description: "Changed project instructions" });
   await refresh.refreshSkillsDiscovery({ workspaceDir: params.workspaceDir });
-  snapshot = (
-    await resolveReusableWorkspaceSkillSnapshot({ ...canonicalParams, existingSnapshot: snapshot })
-  ).snapshot;
-  expect(snapshot.prompt).toContain("Changed project instructions");
+  saved = await snapshot({ ...canonicalParams, existingSnapshot: saved });
+  expect(saved.prompt).toContain("Changed project instructions");
   // A remote explicit path with identical text is a different source identity.
   const remote = await resolveReusableWorkspaceSkillSnapshot({
     ...params,
     executionWorkspaceDir: canonical,
-    existingSnapshot: snapshot,
+    existingSnapshot: saved,
   });
   expect(remote.shouldRefresh).toBe(true);
   expect(access.loadSkills.mock.lastCall?.[0].executionWorkspaceDir).toBe(canonical);
   expect(access.watchSkills.mock.lastCall?.[0].executionWorkspaceDir).toBe(canonical);
   release();
   await expect(
-    resolveReusableWorkspaceSkillSnapshot({ ...canonicalParams, existingSnapshot: snapshot }),
+    resolveReusableWorkspaceSkillSnapshot({ ...canonicalParams, existingSnapshot: saved }),
   ).rejects.toThrow("stopped or not ready");
 });
