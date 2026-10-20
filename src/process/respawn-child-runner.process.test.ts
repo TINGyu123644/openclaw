@@ -4,6 +4,9 @@ import { expect, it } from "vitest";
 import { CLI_PARENT_BOUND_PRELOAD } from "../../cli-parent-lifetime.mjs";
 import { resolveTestNodeExecPath } from "../test-utils/node-process.js";
 
+const moduleArgs = ["--input-type=module", "-e"];
+const moduleUrl = (file: string) => JSON.stringify(new URL(file, import.meta.url).href);
+
 it.each([
   { lifetime: "complete", transport: "preload" },
   { lifetime: "parent-bound", transport: "preload" },
@@ -13,7 +16,7 @@ it.each([
   "respawn lifetime preserves $lifetime completion through $transport",
   async ({ lifetime, transport }) => {
     const source = `
-      import { watchCliRespawnParent, getCliParentPid } from ${JSON.stringify(new URL("../../cli-parent-lifetime.mjs", import.meta.url).href)};
+      import { watchCliRespawnParent, getCliParentPid } from ${moduleUrl("../../cli-parent-lifetime.mjs")};
       watchCliRespawnParent();
       const timer = ${lifetime === "complete" ? "undefined" : "setInterval(() => {}, 1000)"};
       process.once("SIGTERM", () => { clearInterval(timer); process.stdout.write("settled"); });
@@ -25,8 +28,7 @@ it.each([
       resolveTestNodeExecPath(),
       [
         ...(transport === "preload" ? ["--import", CLI_PARENT_BOUND_PRELOAD] : []),
-        "--input-type=module",
-        "-e",
+        ...moduleArgs,
         source,
       ],
       {
@@ -72,23 +74,19 @@ it.runIf(process.platform !== "win32").each([
     const child = signal
       ? "process.stdout.write('settled-output', () => process.kill(process.pid, 'SIGKILL'));"
       : "process.stdout.write('settled-output'); process.exitCode = 143;";
-    const source =
+    const [module, run]: [string, string] =
       owner === "entry"
-        ? "import {runRespawnChildWithSignalBridge} from " +
-          JSON.stringify(new URL("./respawn-child-runner.ts", import.meta.url).href) +
-          ";" +
-          "process.exitCode = await runRespawnChildWithSignalBridge({command:process.execPath,args:['-e'," +
-          JSON.stringify(child) +
-          "],env:{},onError:console.error});"
-        : "import {runRespawnedChild} from " +
-          JSON.stringify(new URL("../../node-runtime-recovery.mjs", import.meta.url).href) +
-          ";" +
-          "await runRespawnedChild({command:process.execPath,args:['-e'," +
-          JSON.stringify(child) +
-          "],env:{}});";
+        ? ["./respawn-child-runner.ts", "runRespawnChildWithSignalBridge"]
+        : ["../../node-runtime-recovery.mjs", "runRespawnedChild"];
+    const source = `
+      import { ${run} as run } from ${moduleUrl(module)};
+      ${owner === "entry" ? "process.exitCode = " : ""}await run({
+        command: process.execPath, args: ['-e', ${JSON.stringify(child)}], env: {},
+        ${owner === "entry" ? "onError: console.error" : ""}
+      });`;
     const result = spawnSync(
       process.execPath,
-      ["--import", import.meta.resolve("tsx"), "--input-type=module", "-e", source],
+      ["--import", import.meta.resolve("tsx"), ...moduleArgs, source],
       {
         encoding: "utf8",
         timeout: 10_000,
