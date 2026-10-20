@@ -2,9 +2,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import * as mediaRoots from "../../media/channel-inbound-roots.js";
-import * as processExec from "../../process/exec.js";
+import * as exec from "../../process/exec.js";
 import { createCommandResult } from "../../test-utils/npm-spec-install-test-helpers.js";
-import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { withOpenClawTestState as withState } from "../../test-utils/openclaw-test-state.js";
 import { stageRemoteInboundMediaIfNeeded } from "./stage-remote-inbound-media.js";
 
 afterEach(() => vi.restoreAllMocks());
@@ -14,8 +14,8 @@ it.each([
   { agentId: undefined, remoteMediaMode: "cache" },
 ] as const)(
   "retries remote global media for $agentId ($remoteMediaMode)",
-  async ({ agentId, remoteMediaMode }) => {
-    await withOpenClawTestState({ label: "remote-media-owner" }, async (state) => {
+  ({ agentId, remoteMediaMode }) =>
+    withState({ label: "remote-media-owner" }, async (state) => {
       const cfg = {
         agents: {
           ownership: "explicit" as const,
@@ -32,34 +32,26 @@ it.each([
         session: { scope: "global" as const },
       };
       vi.spyOn(mediaRoots, "resolveChannelRemoteInboundAttachmentRoots").mockReturnValue([
-        "/synthetic/attachments",
+        "/attachments",
       ]);
       let scpAttempts = 0;
-      const runScp = vi
-        .spyOn(processExec, "runCommandWithTimeout")
-        .mockImplementation(async (argv) => {
-          const retrying = ++scpAttempts === 1;
-          if (!retrying) {
-            await fs.writeFile(argv.at(-1)!, "remote attachment");
-          }
-          return createCommandResult({
-            code: retrying ? 1 : 0,
-            stderr: retrying ? "remote attachment is still materializing" : "",
-          });
+      const runScp = vi.spyOn(exec, "runCommandWithTimeout").mockImplementation(async (argv) => {
+        const retrying = ++scpAttempts === 1;
+        if (!retrying) {
+          await fs.writeFile(argv.at(-1)!, "remote attachment");
+        }
+        return createCommandResult({
+          code: retrying ? 1 : 0,
+          stderr: retrying ? "remote attachment is still materializing" : "",
         });
+      });
       const ctx = {
         MediaRemoteHost: "user@gateway-host",
-        media: [{ path: "/synthetic/attachments/report.txt" }],
+        media: [{ path: "/attachments/report.txt" }],
       };
+      const params = { ctx, cfg, agentId, sessionKey: "global", remoteMediaMode };
       const stage = (workspaceDir: string) =>
-        stageRemoteInboundMediaIfNeeded({
-          ctx,
-          cfg,
-          agentId,
-          sessionKey: "global",
-          workspaceDir,
-          remoteMediaMode,
-        });
+        stageRemoteInboundMediaIfNeeded({ ...params, workspaceDir });
       expect(await stage(state.path(`${agentId}-workspace`))).toBe(true);
       expect(runScp).toHaveBeenCalledTimes(2);
       const fact = ctx.media[0] as { path: string; workspaceDir?: string; staged?: boolean };
@@ -82,6 +74,5 @@ it.each([
           await fs.rm(path.dirname(staged), { recursive: true, force: true });
         }
       }
-    });
-  },
+    }),
 );
