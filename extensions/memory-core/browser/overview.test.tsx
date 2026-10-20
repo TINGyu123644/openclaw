@@ -4,35 +4,20 @@ import { render } from "@solidjs/web";
 import type {
   ControlUiComponentHandle,
   ControlUiSettingsComponents,
-  ControlUiSettingsContext,
-  ControlUiSettingsSnapshot,
   DoctorMemoryStatusPayload,
 } from "openclaw/plugin-sdk/control-ui";
-import { flush, untrack } from "solid-js";
+import { flush } from "solid-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-
-const disposers: (() => void)[] = [];
-afterEach(() => {
-  for (const dispose of disposers.splice(0)) {
-    dispose();
-  }
-});
-const waitForSolid = (assertion: () => void) =>
-  vi.waitFor(() => {
-    flush();
-    assertion();
-  });
-const formatRelativeTimestamp = String;
-function mountSolid(view: Parameters<typeof render>[0]) {
-  const container = document.createElement("div");
-  document.body.append(container);
-  const dispose = render(view, container);
-  disposers.push(() => {
-    dispose();
-    container.remove();
-  });
-  return { container };
-}
+import {
+  containerForTest,
+  contextForTest,
+  disposers,
+  disposeTestViews,
+  mountSettingsView,
+  snapshot,
+  waitForSolid,
+} from "./memory.test-support.ts";
+afterEach(disposeTestViews);
 // SDK component doubles expose content and callbacks, not host styling or artwork.
 function createTestComponents(): ControlUiSettingsComponents {
   function mount<P>(
@@ -85,39 +70,19 @@ import type { MemoryOverviewStatus } from "./controller.ts";
 import { settingsViews } from "./index.tsx";
 import { createMemoryOverview } from "./overview.tsx";
 
-type ViewProps = Parameters<ReturnType<typeof createMemoryOverview>>[0];
-type MemoryOverviewProps = Omit<ViewProps, "engineSelection"> & {
-  engineSelection: { kind: "default" | "pinned" | "off"; pluginId?: string };
-};
-function MemoryOverview(props: MemoryOverviewProps) {
-  const signal = new AbortController().signal;
-  const snapshot: ControlUiSettingsSnapshot = untrack(() => ({
-    agentId: props.agentId,
-    agentsLoading: false,
-    agentsError: null,
-    engine: {
-      kind: props.engineSelection.kind,
-      id: props.engineSelection.pluginId ?? null,
-      availability: "enabled",
-    },
-    connected: true,
-    connectionEpoch: 1,
-    routeIntent: "overview",
-    locale: "en",
-  }));
-  const context: ControlUiSettingsContext = {
-    props: snapshot,
-    signal,
-    components: createTestComponents(),
-    formatRelativeTimestamp,
-    request: vi.fn(),
-    navigate: vi.fn(),
-    refreshAgents: vi.fn(),
-    formatError: String,
-  };
-  const View = createMemoryOverview(context, () => snapshot);
-  return <View {...props} engineSelection={snapshot.engine} />;
+type MemoryOverviewProps = Parameters<ReturnType<typeof createMemoryOverview>>[0];
+function expectText(container: HTMLElement, included: string[], excluded: string[] = []) {
+  for (const text of included) {
+    expect(container.textContent).toContain(text);
+  }
+  for (const text of excluded) {
+    expect(container.textContent).not.toContain(text);
+  }
 }
+const findButton = (container: HTMLElement, label: RegExp) =>
+  [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+    label.test(button.textContent?.trim() ?? ""),
+  );
 
 function fixturePayload(): DoctorMemoryStatusPayload {
   const phaseBase = {
@@ -180,27 +145,26 @@ function fixturePayload(): DoctorMemoryStatusPayload {
 
 function renderOverview(
   status: MemoryOverviewStatus,
-  engineSelection: MemoryOverviewProps["engineSelection"] = {
-    kind: "default",
-    pluginId: "memory-core",
-  },
+  engineSelection = snapshot().engine,
   overrides: Partial<MemoryOverviewProps> = {},
 ) {
-  const { container } = mountSolid(() => (
-    <MemoryOverview
-      {...{
-        agentId: "main",
-        engineSelection,
-        engineDisabled: false,
-        status,
-        probingEmbeddings: false,
-        onRefresh: vi.fn(),
-        onProbeEmbeddings: vi.fn(),
-        onNavigate: vi.fn(),
-        ...overrides,
-      }}
-    />
-  ));
+  const container = containerForTest();
+  const context = contextForTest(snapshot({ engine: engineSelection }), {
+    components: createTestComponents(),
+  });
+  const MemoryOverview = createMemoryOverview(context, () => context.props);
+  const props = {
+    agentId: "main",
+    engineSelection,
+    engineDisabled: false,
+    status,
+    probingEmbeddings: false,
+    onRefresh: vi.fn(),
+    onProbeEmbeddings: vi.fn(),
+    onNavigate: vi.fn(),
+    ...overrides,
+  };
+  disposers.push(render(() => <MemoryOverview {...props} />, container));
   flush();
   return container;
 }
@@ -209,31 +173,33 @@ describe("MemoryOverview", () => {
   it("renders the awake reading hero and status cards from one payload", () => {
     const container = renderOverview({ kind: "ready", payload: fixturePayload() });
 
-    expect(container.textContent).toContain("Memory is awake");
-    expect(container.textContent).toContain("memory-core · hybrid search");
+    expectText(container, [
+      "Memory is awake",
+      "memory-core · hybrid search",
+      "Sleep schedule",
+      "Europe/Vienna",
+      "Promoted today",
+      "21",
+      "b10357 (689e227db)",
+      "metrics=ready",
+    ]);
     expect(container.querySelector('[data-reading="true"]')).not.toBeNull();
-    expect(container.textContent).toContain("Sleep schedule");
-    expect(container.textContent).toContain("Europe/Vienna");
-    expect(container.textContent).toContain("Promoted today");
-    expect(container.textContent).toContain("21");
-    expect(container.textContent).toContain("b10357 (689e227db)");
-    expect(container.textContent).toContain("metrics=ready");
   });
 
   it("renders a grumpy error hero with retry and no book", () => {
     const container = renderOverview({ kind: "error", message: "gateway request failed" });
 
-    expect(container.textContent).toContain("Memory needs attention");
-    expect(container.textContent).toContain("gateway request failed");
-    expect(container.textContent).toContain("Retry");
+    expectText(container, ["Memory needs attention", "gateway request failed", "Retry"]);
     expect(container.querySelector('[data-reading="true"]')).toBeNull();
   });
 
   it("renders the dimmed sleeping hero when the engine is off", () => {
-    const container = renderOverview({ kind: "idle" }, { kind: "off" });
+    const container = renderOverview(
+      { kind: "idle" },
+      { kind: "off", id: null, availability: "enabled" },
+    );
 
-    expect(container.textContent).toContain("Memory is hibernating");
-    expect(container.textContent).toContain("Open Settings");
+    expectText(container, ["Memory is hibernating", "Open Settings"]);
     expect(container.querySelector(".memory-overview__hero--sleeping")).not.toBeNull();
     expect(container.querySelector("[data-test-lobster]")).not.toBeNull();
     expect(container.querySelector('[data-reading="true"]')).toBeNull();
@@ -242,16 +208,16 @@ describe("MemoryOverview", () => {
   it("hibernates a disabled pinned engine and points to Settings", () => {
     const container = renderOverview(
       { kind: "ready", payload: fixturePayload() },
-      { kind: "pinned", pluginId: "memory-core" },
+      { kind: "pinned", id: "memory-core", availability: "enabled" },
       { engineDisabled: true },
     );
 
-    expect(container.textContent).toContain("Memory is hibernating");
-    expect(container.textContent).toContain("selected memory engine is disabled");
-    expect(container.textContent).toContain("Open Settings");
+    expectText(
+      container,
+      ["Memory is hibernating", "selected memory engine is disabled", "Open Settings"],
+      ["Engine health", "Sleep schedule"],
+    );
     expect(container.querySelector('[data-reading="true"]')).toBeNull();
-    expect(container.textContent).not.toContain("Engine health");
-    expect(container.textContent).not.toContain("Sleep schedule");
   });
 
   it("reports every phase disabled when the global dream cycle is off", () => {
@@ -298,9 +264,7 @@ describe("MemoryOverview", () => {
 
     expect(container.textContent).toContain("Embedding readiness has not been checked yet.");
     expect(container.textContent).not.toContain("openclaw memory status --deep");
-    const testButton = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent?.trim() === "Test",
-    );
+    const testButton = findButton(container, /^Test$/);
     expect(testButton?.disabled).toBe(false);
     testButton?.click();
     expect(onProbeEmbeddings).toHaveBeenCalledOnce();
@@ -332,49 +296,26 @@ describe("MemoryOverview", () => {
       onNavigate,
     });
 
-    const shortcut = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
-      button.textContent?.includes("Search memories"),
-    );
-    shortcut?.click();
+    findButton(container, /Search memories/)?.click();
     expect(onNavigate).toHaveBeenCalledWith("memories");
   });
 });
 
 it("clears a roster error in the mounted plugin without issuing a Doctor request", async () => {
-  const container = document.createElement("div");
-  document.body.append(container);
-  const signal = new AbortController().signal;
-  const props: ControlUiSettingsSnapshot = {
-    agentId: null,
-    agentsLoading: false,
-    agentsError: "roster failed",
-    engine: { kind: "default", id: "memory-core", availability: "enabled" },
-    connected: true,
-    connectionEpoch: 1,
-    routeIntent: "overview",
-    locale: "en",
-  };
-  const request = vi.fn();
-  const context: ControlUiSettingsContext = {
-    signal,
-    props,
-    components: createTestComponents(),
-    request,
-    navigate: vi.fn(),
-    refreshAgents: vi.fn(),
-    formatError: String,
-    formatRelativeTimestamp,
-  };
-  const view = settingsViews[0]!.mount(container, context);
-  try {
-    await waitForSolid(() => expect(container.textContent).toContain("roster failed"));
-    view.update({ ...props, agentsError: null, agentsLoading: true });
-    await waitForSolid(() => expect(container.textContent).not.toContain("roster failed"));
-    view.update({ ...props, agentsError: null });
-    await waitForSolid(() => expect(container.textContent).not.toContain("roster failed"));
-    expect(request).not.toHaveBeenCalled();
-  } finally {
-    view.dispose();
-    container.remove();
-  }
+  const context = contextForTest(
+    snapshot({
+      agentId: null,
+      agentsLoading: false,
+      agentsError: "roster failed",
+    }),
+    { components: createTestComponents() },
+  );
+  const { request } = context;
+  const { container, update } = mountSettingsView(settingsViews[0]!, context);
+  await waitForSolid(() => expect(container.textContent).toContain("roster failed"));
+  update({ agentsError: null, agentsLoading: true });
+  await waitForSolid(() => expect(container.textContent).not.toContain("roster failed"));
+  update({ agentsError: null, agentsLoading: false });
+  await waitForSolid(() => expect(container.textContent).not.toContain("roster failed"));
+  expect(request).not.toHaveBeenCalled();
 });
