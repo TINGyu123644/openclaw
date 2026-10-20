@@ -40,8 +40,8 @@ function receive(ws: WebSocket, accepts: (value: Record<string, unknown>) => boo
   });
 }
 
-it("scopes references to their authenticated connection and releases native claims on peer loss", async () => {
-  await withConnectedDaemon(async ({ port, token, extension, holdDetach }) => {
+it("scopes references to their authenticated connection and releases native claims on peer loss", () =>
+  withConnectedDaemon(async ({ port, token, extension, holdDetach }) => {
     const first = await connectOwner(port, token);
     const second = await connectOwner(port, token);
     const request = ownerRequests(first.ws);
@@ -89,11 +89,10 @@ it("scopes references to their authenticated connection and releases native clai
       first.ws.terminate();
       second.ws.terminate();
     }
-  });
-});
+  }));
 
-it("owns malformed-frame errors after owner authentication without stopping the relay", async () => {
-  await withConnectedDaemon(async ({ port, token, extension }) => {
+it("owns malformed-frame errors after owner authentication without stopping the relay", () =>
+  withConnectedDaemon(async ({ port, token, extension }) => {
     const failed = await connectOwner(port, token);
     const healthy = await connectOwner(port, token);
     try {
@@ -109,5 +108,4 @@ it("owns malformed-frame errors after owner authentication without stopping the 
       failed.ws.terminate();
       healthy.ws.terminate();
     }
-  });
-});
+  }));

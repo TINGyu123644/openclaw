@@ -104,12 +104,20 @@ it.each([
 });
 
 describe.runIf(process.platform !== "win32")("POSIX secret protection", () => {
-  it("self-heals a secret with mode 0644 to 0600 and still reads it", async () => {
-    const token = await ensureToken();
-    fs.chmodSync(secretPath, 0o644);
-    expect(readToken()).toBe(token);
-    expect(fs.statSync(secretPath).mode & 0o777).toBe(0o600);
-  });
+  it.each([true, false])(
+    "repairs broad permissions only when chmod succeeds (%s)",
+    async (allowed) => {
+      const token = await ensureToken();
+      fs.chmodSync(secretPath, 0o644);
+      if (!allowed) {
+        vi.spyOn(fs, "fchmodSync").mockImplementation(() => {
+          throw new Error("permission denied");
+        });
+      }
+      expect(readToken()).toBe(allowed ? token : null);
+      expect(fs.statSync(secretPath).mode & 0o777).toBe(allowed ? 0o600 : 0o644);
+    },
+  );
 
   it("refuses a foreign-owned secret without changing it", async () => {
     const token = await ensureToken();
@@ -118,15 +126,6 @@ describe.runIf(process.platform !== "win32")("POSIX secret protection", () => {
     expect(readToken()).toBeNull();
     await expect(ensureToken()).rejects.toThrow("unreadable/malformed");
     expect(fs.readFileSync(secretPath, "utf8").trim()).toBe(token);
-  });
-
-  it("refuses a broad-mode secret when tightening fails", async () => {
-    await ensureToken();
-    fs.chmodSync(secretPath, 0o644);
-    vi.spyOn(fs, "fchmodSync").mockImplementation(() => {
-      throw new Error("permission denied");
-    });
-    expect(readToken()).toBeNull();
   });
 
   it("rejects a swapped key path without changing its replacement", async () => {

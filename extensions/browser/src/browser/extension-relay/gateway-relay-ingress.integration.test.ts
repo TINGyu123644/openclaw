@@ -24,8 +24,8 @@ afterEach(() => {
 
 it.each(["peer-close", "preparation-failure", "superseded"] as const)(
   "releases a paused legacy ingress after %s without retiring the standalone relay",
-  async (outcome) => {
-    await withConnectedDaemon(async ({ token, extension }) => {
+  (outcome) =>
+    withConnectedDaemon(async ({ token, extension }) => {
       const state = await startBrowserControlServiceFromConfig();
       assert(state, "Expected Browser control state");
       const profile = createBrowserControlContext().forProfile("chrome").profile;
@@ -110,6 +110,5 @@ it.each(["peer-close", "preparation-failure", "superseded"] as const)(
           server.close(() => resolve());
         });
       }
-    });
-  },
+    }),
 );

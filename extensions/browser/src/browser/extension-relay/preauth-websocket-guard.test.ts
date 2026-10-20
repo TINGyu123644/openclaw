@@ -50,7 +50,6 @@ describe("pre-auth WebSocket head admission", () => {
     // Supply Node's exact head argument: client TCP writes cannot choose its size.
     const head = Buffer.alloc(17 * 1024 + 1);
     expect(handlePreAuthWebSocketUpgrade({ ...fixture, head, onUpgrade })).toBe(false);
-    expect(head.byteLength).toBe(17_409);
     expect(handleUpgrade).not.toHaveBeenCalled();
     expect(onUpgrade).not.toHaveBeenCalled();
     expect(fixture.wss.clients.size).toBe(0);

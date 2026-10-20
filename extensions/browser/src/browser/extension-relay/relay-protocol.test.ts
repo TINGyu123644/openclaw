@@ -46,30 +46,25 @@ describe("parseExtensionMessage", () => {
   // Reject malformed fields before the bridge's synchronous dispatch dereferences them.
   it("rejects frames with malformed payload fields", () => {
     const cases: unknown[] = [
-      // hello: identity fields and tab list must be present and typed.
       { ...validHello, tabs: null },
       { ...validHello, tabs: [null] },
       { ...validHello, tabs: [{ tabId: "1", url: "u", title: "t", active: true }] },
       { ...validHello, userAgent: 42 },
-      // tabs: same tab-list shape as hello.
       { type: "tabs", tabs: {} },
       { type: "tabs", tabs: null },
       { type: "tabs", tabs: [null] },
       { type: "tabs", tabs: [{ tabId: 1, url: "u", title: "t" }] },
       { type: "tabs", tabs: [{ tabId: 1.5, url: "u", title: "t", active: true }] },
       { type: "tabs", tabs: [tab, { ...tab, active: false }] },
-      // cdpEvent: numeric tabId + string method.
       { type: "cdpEvent", tabId: "1", method: "Page.load" },
       { type: "cdpEvent", tabId: 1.5, method: "Page.load" },
       { type: "cdpEvent", tabId: 1 },
       { type: "cdpEvent", tabId: 1, sessionId: 2, method: "Page.load" },
-      // result/error: numeric seq correlates the pending command.
       { type: "result", seq: "3" },
       { type: "result", seq: -1 },
       { type: "result", seq: 1.5 },
       { type: "error", seq: null, message: "boom" },
       { type: "error", seq: 3, message: {} },
-      // detached: numeric tabId.
       { type: "detached", tabId: "1", reason: "cancel" },
       { type: "detached", tabId: 1, reason: null },
     ];
