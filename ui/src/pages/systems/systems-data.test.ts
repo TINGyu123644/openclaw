@@ -1,8 +1,4 @@
-import type {
-  EnvironmentSummary,
-  SessionPlacement,
-  SystemInfoResult,
-} from "@openclaw/gateway-protocol";
+import type { EnvironmentSummary, SessionPlacement } from "@openclaw/gateway-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { GatewaySessionRow } from "../../api/types.ts";
@@ -14,6 +10,7 @@ import {
   projectSystemsInventory,
   type SystemsInventory,
 } from "./systems-data.ts";
+import { systemInfo } from "./systems.test-support.ts";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -24,26 +21,11 @@ const environments: EnvironmentSummary[] = [
   { id: "worker:active", type: "worker", status: "available", desktop: true },
   { id: "worker:retained", type: "worker", status: "unavailable" },
 ];
-const systemInfo: SystemInfoResult = {
-  machineName: "Gateway host",
-  hostname: "gateway-host",
-  platform: "linux",
-  release: "test",
-  arch: "x64",
-  osLabel: "Linux",
-  nodeVersion: "v26",
-  pid: 1,
-  uptimeMs: 1_000,
-  cpuCount: 4,
-  memoryTotalBytes: 8_192,
-  memoryFreeBytes: 4_096,
-};
-const hostStats = { cpuCount: 2, memoryTotalBytes: 4_096, memoryFreeBytes: 1_024, updatedAtMs: 50 };
 const inventory: SystemsInventory = {
   environments,
   nodes: [
     { nodeId: "headless", connected: true },
-    { nodeId: "offline", connected: false, hostStats },
+    { nodeId: "offline", connected: false },
     { nodeId: "managed-cloud-node", connected: true },
   ],
   gatewaySystemInfo: systemInfo,
@@ -63,6 +45,9 @@ const active: SessionPlacement = {
 function session(key: string, fields: Partial<GatewaySessionRow> = {}): GatewaySessionRow {
   return { key, sessionId: key, kind: "direct", updatedAt: 1, ...fields };
 }
+function reclaimedPlacement(environmentId: string): SessionPlacement {
+  return { state: "reclaimed", ...timing, environmentId, activeOwnerEpoch: 1 };
+}
 
 describe("Systems inventory projection", () => {
   it("omits completed worker history while keeping running workers and unresolved cleanup", () => {
@@ -73,24 +58,14 @@ describe("Systems inventory projection", () => {
       status: state === "attached" ? "available" : "unavailable",
       worker: {
         state,
-        profileId: "cloud",
         providerId: "crabbox",
-        ...(state !== "failed" ? { leaseId: `lease:${state}` } : {}),
         ageMs: 1_000,
         attachedSessionIds: [],
         tunnelStatus: "stopped",
       },
     }));
     const rows = projectSystemsInventory({ ...inventory, environments: workers }, [
-      session("archived", {
-        archivedAt: 2,
-        placement: {
-          state: "reclaimed",
-          ...timing,
-          environmentId: "worker:destroyed",
-          activeOwnerEpoch: 1,
-        },
-      }),
+      session("archived", { placement: reclaimedPlacement("worker:destroyed"), archivedAt: 2 }),
     ]);
     expect(rows.map((row) => row.environment.id)).toEqual([
       "worker:attached",
@@ -115,20 +90,15 @@ describe("Systems inventory projection", () => {
 
   it("retains only recorded terminal references and never guesses a prior device or Gateway fallback", () => {
     const reclaimed = session("reclaimed", {
+      placement: reclaimedPlacement("worker:retained"),
       execNode: "headless",
-      placement: {
-        state: "reclaimed",
-        ...timing,
-        environmentId: "worker:retained",
-        activeOwnerEpoch: 1,
-      },
     });
     const failed = session("failed", {
       placement: { state: "failed", ...timing, recoveryError: "Provisioning failed" },
     });
     const requested = session("requested", {
-      execNode: "headless",
       placement: { state: "requested", ...timing },
+      execNode: "headless",
     });
     const moved = session("moved", {
       placement: active,
@@ -143,27 +113,29 @@ describe("Systems inventory projection", () => {
 });
 
 describe("Systems inventory loading", () => {
-  function gateway(client: GatewayBrowserClient) {
-    return createApplicationGateway({
+  function setup(...responses: unknown[]) {
+    const client = new GatewayBrowserClient({ url: "ws://gateway.test" });
+    const request = vi.spyOn(client, "request");
+    for (const response of responses) {
+      request.mockImplementationOnce(() =>
+        response instanceof Error ? Promise.reject(response) : Promise.resolve(response),
+      );
+    }
+    const gateway = createApplicationGateway({
       client,
       phase: "connected",
       hello: gatewayHelloForMethods(["system.info"]),
     } as ApplicationGatewaySnapshot).gateway;
+    return { request, load: (signal?: AbortSignal) => loadSystemsInventory(gateway, { signal }) };
   }
 
   it("loads the existing read contracts and does not create a second session inventory", async () => {
-    const client = new GatewayBrowserClient({ url: "ws://gateway.test" });
-    const request = vi
-      .spyOn(client, "request")
-      .mockResolvedValueOnce({ environments })
-      .mockResolvedValueOnce({ nodes: inventory.nodes })
-      .mockResolvedValueOnce(systemInfo);
+    const { request, load } = setup({ environments }, { nodes: inventory.nodes }, systemInfo);
     const controller = new AbortController();
-    expect(
-      await loadSystemsInventory(gateway(client), {
-        signal: controller.signal,
-      }),
-    ).toEqual({ ...inventory, gatewaySampledAtMs: expect.any(Number) });
+    expect(await load(controller.signal)).toEqual({
+      ...inventory,
+      gatewaySampledAtMs: expect.any(Number),
+    });
     expect(
       request.mock.calls.map(([method, params, options]) => [method, params, options?.signal]),
     ).toEqual([
@@ -174,24 +146,25 @@ describe("Systems inventory loading", () => {
   });
 
   it("keeps canonical inventory when auxiliary resource reads fail, with visible errors", async () => {
-    const client = new GatewayBrowserClient({ url: "ws://gateway.test" });
-    vi.spyOn(client, "request")
-      .mockResolvedValueOnce({ environments })
-      .mockRejectedValueOnce(new Error("Node inventory denied"))
-      .mockRejectedValueOnce(new Error("System info unavailable"));
-    const result = await loadSystemsInventory(gateway(client), {});
-    expect(result).toMatchObject({ environments, nodes: [], gatewaySystemInfo: null });
-    expect(result?.errors.nodes).toContain("Node inventory denied");
-    expect(result?.errors.systemInfo).toContain("System info unavailable");
+    const { load } = setup(
+      { environments },
+      new Error("Node inventory denied"),
+      new Error("System info unavailable"),
+    );
+    expect(await load()).toMatchObject({
+      environments,
+      nodes: [],
+      gatewaySystemInfo: null,
+      errors: {
+        nodes: expect.stringContaining("Node inventory denied"),
+        systemInfo: expect.stringContaining("System info unavailable"),
+      },
+    });
   });
 
   it("propagates inventory failure rather than synthesizing a successful list from nodes", async () => {
     const failure = new Error("Inventory unavailable");
-    const client = new GatewayBrowserClient({ url: "ws://gateway.test" });
-    vi.spyOn(client, "request")
-      .mockRejectedValueOnce(failure)
-      .mockResolvedValueOnce({ nodes: inventory.nodes })
-      .mockResolvedValueOnce(systemInfo);
-    await expect(loadSystemsInventory(gateway(client), {})).rejects.toBe(failure);
+    const { load } = setup(failure, { nodes: inventory.nodes }, systemInfo);
+    await expect(load()).rejects.toBe(failure);
   });
 });
