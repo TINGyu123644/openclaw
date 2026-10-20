@@ -1,16 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ClawdbotConfig } from "../runtime-api.js";
 
 const listMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./accounts.js", () => ({
-  resolveFeishuRuntimeAccount: () => ({
-    accountId: "default",
-    configured: true,
-    appId: "cli_main",
-    appSecret: "secret",
-    domain: "feishu",
-  }),
+  resolveFeishuRuntimeAccount: () => ({ configured: true }),
 }));
 
 vi.mock("./client.js", () => ({
@@ -20,7 +13,7 @@ vi.mock("./client.js", () => ({
 import { listReactionsFeishu } from "./reactions.js";
 
 function list(emojiType?: string) {
-  return listReactionsFeishu({ cfg: {} as ClawdbotConfig, messageId: "om_message", emojiType });
+  return listReactionsFeishu({ cfg: {}, messageId: "om_message", emojiType });
 }
 type Operator = { operator_type: string; operator_id: string };
 function item(id: string, emoji: string, operator?: Operator) {
@@ -86,18 +79,13 @@ describe("listReactionsFeishu", () => {
     });
   });
 
-  it("rejects a continuation response without its required page token", async () => {
-    listMock.mockResolvedValue(page([], true));
-
-    await expect(list()).rejects.toThrow(/page token/i);
-    expect(listMock).toHaveBeenCalledOnce();
-  });
-
-  it("rejects repeated reaction page tokens", async () => {
-    listMock.mockResolvedValue(page([], "same-page"));
-
-    await expect(list()).rejects.toThrow(/repeated page token/i);
-    expect(listMock).toHaveBeenCalledTimes(2);
+  it.each([
+    [undefined, /page token/i, 1],
+    ["same-page", /repeated page token/i, 2],
+  ])("rejects invalid continuation token %s", async (token, error, calls) => {
+    listMock.mockResolvedValue(page([], token ?? true));
+    await expect(list()).rejects.toThrow(error);
+    expect(listMock).toHaveBeenCalledTimes(calls);
   });
 
   it("propagates API failures from continuation pages", async () => {

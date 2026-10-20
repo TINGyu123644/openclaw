@@ -28,18 +28,12 @@ function replyPolicy(feishu: Record<string, unknown>) {
 }
 
 describe("resolveFeishuReplyPolicy", () => {
-  it("defaults open groups to no mention when unset", () => {
-    expect(replyPolicy({})).toEqual({ requireMention: false });
-  });
-
-  it("keeps explicit top-level mention gating in open groups", () => {
-    expect(replyPolicy({ requireMention: true })).toEqual({ requireMention: true });
-  });
-
-  it("keeps explicit per-group mention gating in open groups", () => {
-    expect(replyPolicy({ groups: { oc_1: { requireMention: true } } })).toEqual({
-      requireMention: true,
-    });
+  it.each([
+    [{}, false],
+    [{ requireMention: true }, true],
+    [{ groups: { oc_1: { requireMention: true } } }, true],
+  ])("resolves open-group mention policy %j", (config, requireMention) => {
+    expect(replyPolicy(config)).toEqual({ requireMention });
   });
 });
 

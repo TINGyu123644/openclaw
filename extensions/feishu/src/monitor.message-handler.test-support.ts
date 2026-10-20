@@ -1,6 +1,6 @@
 import { createTestInboundDebounceFlush } from "openclaw/plugin-sdk/channel-test-helpers";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import type { ClawdbotConfig, PluginRuntime } from "../runtime-api.js";
 import type { FeishuMessageEvent } from "./event-types.js";
 import { createFeishuMessageReceiveHandler } from "./monitor.message-handler.js";
@@ -24,7 +24,9 @@ function createTextEvent(senderOpenId: string): FeishuMessageEvent {
   };
 }
 
-function createHandler() {
+afterEach(() => closeOpenClawStateDatabaseAsync());
+
+it("drops the current bot before debounce and processing claims", async () => {
   let onFlush:
     | ((
         entries: FeishuMessageEvent[],
@@ -62,22 +64,10 @@ function createHandler() {
     getBotOpenId: () => "ou_bot",
   });
 
-  return { handler, handleMessage, enqueue };
-}
+  await handler(createTextEvent("ou_bot"));
+  await handler(createTextEvent("ou_other_bot"));
 
-describe("createFeishuMessageReceiveHandler self-message filtering", () => {
-  afterEach(async () => {
-    await closeOpenClawStateDatabaseAsync();
-  });
-
-  it("drops the current bot before debounce and processing claims", async () => {
-    const { handler, handleMessage, enqueue } = createHandler();
-
-    await handler(createTextEvent("ou_bot"));
-    await handler(createTextEvent("ou_other_bot"));
-
-    expect(enqueue).toHaveBeenCalledTimes(1);
-    expect(handleMessage).toHaveBeenCalledTimes(1);
-    expect(handleMessage.mock.calls[0]?.[0]?.event.sender.sender_id.open_id).toBe("ou_other_bot");
-  });
+  expect(enqueue).toHaveBeenCalledTimes(1);
+  expect(handleMessage).toHaveBeenCalledTimes(1);
+  expect(handleMessage.mock.calls[0]?.[0]?.event.sender.sender_id.open_id).toBe("ou_other_bot");
 });
