@@ -59,20 +59,15 @@ function calibrate(counters: Int32Array) {
     );
     const beforeRows = Atomics.load(counters, 2);
     const beforeBytes = Atomics.load(counters, 3);
-    assert.deepEqual(
-      query.all(text).map((row) => row.text),
-      [text],
-    );
-    assert.equal(Atomics.load(counters, 2) - beforeRows, 1);
-    assert.equal(Atomics.load(counters, 3) - beforeBytes, Buffer.byteLength(text));
-    Atomics.store(counters, 0, 1);
-    assert.deepEqual(
-      [...query.iterate(text)].map((row) => row.text),
-      [text],
-    );
-    assert.equal(Atomics.load(counters, 2) - beforeRows, 2);
-    assert.equal(Atomics.load(counters, 3) - beforeBytes, 2 * Buffer.byteLength(text));
-    Atomics.store(counters, 1, 1);
+    for (const [index, read] of [() => query.all(text), () => [...query.iterate(text)]].entries()) {
+      assert.deepEqual(
+        read().map((row) => row.text),
+        [text],
+      );
+      assert.equal(Atomics.load(counters, 2) - beforeRows, index + 1);
+      assert.equal(Atomics.load(counters, 3) - beforeBytes, (index + 1) * Buffer.byteLength(text));
+      Atomics.store(counters, index, 1);
+    }
   } finally {
     db.close();
   }

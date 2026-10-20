@@ -5,17 +5,36 @@ import {
   withMemoryWorkspaceLock,
   withMemoryWorkspacePreparation,
 } from "./memory-workspace-lock.js";
+
+async function expectBlocked(
+  order: string[],
+  expected: string[],
+  release: ReturnType<typeof createDeferred<void>>,
+  pending: Promise<unknown>[],
+) {
+  try {
+    await nextTurn();
+    expect(order).toEqual(expected);
+  } finally {
+    release.resolve();
+    await Promise.all(pending);
+  }
+}
+
 describe("memory workspace ordering", () => {
   let caseId = 0;
-  async function makeWorkspace(): Promise<string> {
-    return `/memory-workspace-test/case-${caseId++}`;
+  function setup() {
+    const order: string[] = [];
+    return {
+      workspace: `/memory-workspace-test/case-${caseId++}`,
+      entered: createDeferred<void>(),
+      release: createDeferred<void>(),
+      order,
+    };
   }
 
   it("keeps preparations and writers in the same local FIFO", async () => {
-    const workspace = await makeWorkspace();
-    const entered = createDeferred<void>();
-    const release = createDeferred<void>();
-    const order: string[] = [];
+    const { workspace, entered, release, order } = setup();
     const first = withMemoryWorkspacePreparation(workspace, async () => {
       order.push("first preparation");
       entered.resolve();
@@ -28,21 +47,12 @@ describe("memory workspace ordering", () => {
     const last = withMemoryWorkspacePreparation(workspace, async () => {
       order.push("last preparation");
     });
-    try {
-      await nextTurn();
-      expect(order).toEqual(["first preparation"]);
-    } finally {
-      release.resolve();
-      await Promise.all([first, writer, last]);
-    }
+    await expectBlocked(order, ["first preparation"], release, [first, writer, last]);
     expect(order).toEqual(["first preparation", "writer", "last preparation"]);
   });
 
   it("reenters a live write scope and serializes sibling preparations", async () => {
-    const workspace = await makeWorkspace();
-    const entered = createDeferred<void>();
-    const release = createDeferred<void>();
-    const order: string[] = [];
+    const { workspace, entered, release, order } = setup();
     await withMemoryWorkspaceLock(workspace, async () => {
       const first = withMemoryWorkspacePreparation(workspace, async () => {
         order.push("first");
@@ -55,25 +65,16 @@ describe("memory workspace ordering", () => {
       const second = withMemoryWorkspacePreparation(workspace, async () => {
         order.push("second");
       });
-      try {
-        await entered.promise;
-        await nextTurn();
-        expect(order).toEqual(["first"]);
-      } finally {
-        release.resolve();
-        await Promise.all([first, second]);
-      }
+      await entered.promise;
+      await expectBlocked(order, ["first"], release, [first, second]);
     });
     expect(order).toEqual(["first", "nested", "second"]);
   });
 
   it("queues preparation resumed from an expired write scope behind the current writer", async () => {
-    const workspace = await makeWorkspace();
+    const { workspace, entered, release, order } = setup();
     const resume = createDeferred<void>();
     const attempted = createDeferred<void>();
-    const entered = createDeferred<void>();
-    const release = createDeferred<void>();
-    const order: string[] = [];
     const retained = await withMemoryWorkspaceLock(workspace, async () => ({
       task: resume.promise.then(async () => {
         attempted.resolve();
@@ -87,16 +88,10 @@ describe("memory workspace ordering", () => {
       await release.promise;
       order.push("writer");
     });
-    try {
-      await entered.promise;
-      resume.resolve();
-      await attempted.promise;
-      await nextTurn();
-      expect(order).toEqual([]);
-    } finally {
-      release.resolve();
-      await Promise.all([writer, retained.task]);
-    }
+    await entered.promise;
+    resume.resolve();
+    await attempted.promise;
+    await expectBlocked(order, [], release, [writer, retained.task]);
     expect(order).toEqual(["writer", "preparation"]);
   });
 });

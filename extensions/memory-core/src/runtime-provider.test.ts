@@ -1,5 +1,3 @@
-// Memory Core provider tests cover plugin runtime integration.
-import type { OpenClawConfig } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import type { MemorySearchResult } from "openclaw/plugin-sdk/memory-core-host-runtime-files";
 import { describe, expect, it, vi } from "vitest";
 
@@ -39,86 +37,53 @@ import { createMemoryRuntime } from "./runtime-provider.js";
 const memoryRuntime = createMemoryRuntime({
   runInBackgroundContext: runInMemoryTestBackgroundContext,
 });
+const params = { cfg: {}, agentId: "main" };
 
 describe("memoryRuntime", () => {
   it("preserves manager debug metadata", async () => {
-    const cfg = {} as OpenClawConfig;
-
-    const result = await memoryRuntime.getMemorySearchManager({
-      cfg,
-      agentId: "main",
-    });
-
+    const result = await memoryRuntime.getMemorySearchManager(params);
     expect(result.debug).toEqual(managerDebug);
     expect(getMemorySearchManagerMock).toHaveBeenCalledWith({
-      cfg,
-      agentId: "main",
+      ...params,
       runInBackgroundContext: runInMemoryTestBackgroundContext,
     });
   });
 
   it("forwards optional diagnostic source inspection", async () => {
-    const cfg = {} as OpenClawConfig;
-
-    await memoryRuntime.getMemorySearchManager({
-      cfg,
-      agentId: "main",
-      purpose: "status",
-      inspectSources: true,
-    });
-
+    const diagnostic = { ...params, purpose: "status" as const, inspectSources: true };
+    await memoryRuntime.getMemorySearchManager(diagnostic);
     expect(getMemorySearchManagerMock).toHaveBeenCalledWith({
-      cfg,
-      agentId: "main",
-      purpose: "status",
-      inspectSources: true,
+      ...diagnostic,
       runInBackgroundContext: runInMemoryTestBackgroundContext,
     });
   });
 
   it("keeps local-service acquisition scoped to each runtime instance", async () => {
-    const cfg = {} as OpenClawConfig;
-    const firstAcquire = vi.fn(async () => undefined);
-    const secondAcquire = vi.fn(async () => undefined);
-
-    await Promise.all([
-      createMemoryRuntime({ acquireLocalService: firstAcquire }).getMemorySearchManager({
-        cfg,
-        agentId: "first",
-      }),
-      createMemoryRuntime({ acquireLocalService: secondAcquire }).getMemorySearchManager({
-        cfg,
-        agentId: "second",
-      }),
-    ]);
-
-    expect(getMemorySearchManagerMock).toHaveBeenCalledWith({
-      cfg,
-      agentId: "first",
-      acquireLocalService: firstAcquire,
-    });
-    expect(getMemorySearchManagerMock).toHaveBeenCalledWith({
-      cfg,
-      agentId: "second",
-      acquireLocalService: secondAcquire,
-    });
+    const requests = ["first", "second"].map((agentId) => ({
+      cfg: params.cfg,
+      agentId,
+      acquireLocalService: vi.fn(async () => undefined),
+    }));
+    await Promise.all(
+      requests.map(({ acquireLocalService, ...request }) =>
+        createMemoryRuntime({ acquireLocalService }).getMemorySearchManager(request),
+      ),
+    );
+    for (const request of requests) {
+      expect(getMemorySearchManagerMock).toHaveBeenCalledWith(request);
+    }
   });
 
   it("binds the scoped state opener inside each lazy runtime instance", async () => {
-    const cfg = {} as OpenClawConfig;
     const openKeyedStore = vi.fn();
     configureMemoryCoreDreamingStateMock.mockClear();
 
-    await createMemoryRuntime({ openKeyedStore }).getMemorySearchManager({
-      cfg,
-      agentId: "main",
-    });
+    await createMemoryRuntime({ openKeyedStore }).getMemorySearchManager(params);
 
     expect(configureMemoryCoreDreamingStateMock).toHaveBeenCalledWith(openKeyedStore);
   });
 
   it("delegates raw-hit authorization to the canonical session visibility filter", async () => {
-    const cfg = {} as OpenClawConfig;
     const hits: MemorySearchResult[] = [
       {
         source: "sessions",
@@ -130,21 +95,13 @@ describe("memoryRuntime", () => {
       },
     ];
     filterMemorySearchHitsBySessionVisibilityMock.mockResolvedValue([]);
-    await expect(
-      memoryRuntime.authorizeSearchHits({
-        cfg,
-        agentId: "main",
-        requesterSessionKey: "agent:main:voice:15550001234",
-        sandboxed: false,
-        hits,
-      }),
-    ).resolves.toEqual([]);
-    expect(filterMemorySearchHitsBySessionVisibilityMock).toHaveBeenCalledWith({
-      cfg,
-      agentId: "main",
+    const request = {
+      ...params,
       requesterSessionKey: "agent:main:voice:15550001234",
       sandboxed: false,
       hits,
-    });
+    };
+    await expect(memoryRuntime.authorizeSearchHits(request)).resolves.toEqual([]);
+    expect(filterMemorySearchHitsBySessionVisibilityMock).toHaveBeenCalledWith(request);
   });
 });

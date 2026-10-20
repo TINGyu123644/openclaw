@@ -19,6 +19,10 @@ export function makeMessage(role: "user" | "assistant", timestamp: string, conte
   return { role, timestamp, content };
 }
 
+function transcriptMessage({ role, content, timestamp, owner }: TranscriptMessage) {
+  return { role, content, timestamp, ...(owner ? { __openclaw: { senderIsOwner: true } } : {}) };
+}
+
 export async function writeTranscript(
   filePath: string,
   messages: TranscriptMessage[],
@@ -28,12 +32,7 @@ export async function writeTranscript(
     type: "message",
     id: `message-${index}`,
     timestamp: message.timestamp,
-    message: {
-      role: message.role,
-      content: message.content,
-      timestamp: message.timestamp,
-      ...(message.owner ? { __openclaw: { senderIsOwner: true } } : {}),
-    },
+    message: transcriptMessage(message),
   }));
   await fs.writeFile(filePath, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
 }
@@ -60,12 +59,7 @@ export async function seedCanonicalTranscript(
       sessionId,
       sessionKey,
       storePath,
-      message: {
-        role: message.role,
-        content: message.content,
-        timestamp: message.timestamp,
-        ...(message.owner ? { __openclaw: { senderIsOwner: true } } : {}),
-      },
+      message: transcriptMessage(message),
     });
   }
   await upsertSessionEntry({ agentId, sessionKey, storePath, entry });
