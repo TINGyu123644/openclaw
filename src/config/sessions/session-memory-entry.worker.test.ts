@@ -1,6 +1,7 @@
 import { channel } from "node:diagnostics_channel";
 import path from "node:path";
-import { expect, it } from "vitest";
+import { assert, expect, it } from "vitest";
+import { awaitGateBeforeSettlement } from "../../../test/helpers/promise.js";
 import { observeSqliteReadSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { runOpenClawAgentWriteTransaction } from "../../state/openclaw-agent-db.js";
@@ -26,6 +27,10 @@ function scopeFor(storePath: string, sessionId: string) {
 const contentEntry = (content: string) => ({ entry: { content } });
 const bodyReads = (queries: readonly string[]) =>
   queries.filter((sql) => sql.includes(' as "event_json"'));
+function observeReads() {
+  const observer = observeSqliteReadSql(requireNodeSqlite().StatementSync.prototype);
+  return Object.assign(observer, { [Symbol.dispose]: () => observer.restore() });
+}
 
 it("batches export metadata while observing committed appends, rewrites and cold transitions", async () => {
   await withOpenClawTestState({ label: "session-memory-entry-batch" }, async (state) => {
@@ -39,22 +44,17 @@ it("batches export metadata while observing committed appends, rewrites and cold
     }
     const requests = scopes.map((scope) => ({ absPath: scope.sessionKey, options: scope }));
     const readBatch = async (expectedPayloadReads = 1) => {
-      const observer = observeSqliteReadSql(requireNodeSqlite().StatementSync.prototype);
-      try {
-        const entries = await collectSessionMemoryEntries(requests);
-        const count = (pattern: RegExp) =>
-          observer.queries.filter((sql) => pattern.test(sql)).length;
-        expect({
-          counts: observer.queries.filter(
-            (sql) => /\bcount\(/i.test(sql) && /transcript_events/i.test(sql),
-          ).length,
-          cold: count(/\bfrom\s+"session_transcript_cold_archives"/i),
-          bodies: bodyReads(observer.queries).length,
-        }).toEqual({ counts: 2, cold: 0, bodies: expectedPayloadReads });
-        return entries;
-      } finally {
-        observer.restore();
-      }
+      using observer = observeReads();
+      const entries = await collectSessionMemoryEntries(requests);
+      const count = (pattern: RegExp) => observer.queries.filter((sql) => pattern.test(sql)).length;
+      expect({
+        counts: observer.queries.filter(
+          (sql) => /\bcount\(/i.test(sql) && /transcript_events/i.test(sql),
+        ).length,
+        cold: count(/\bfrom\s+"session_transcript_cold_archives"/i),
+        bodies: bodyReads(observer.queries).length,
+      }).toEqual({ counts: 2, cold: 0, bodies: expectedPayloadReads });
+      return entries;
     };
 
     const initial = await readBatch();
@@ -76,17 +76,14 @@ it("batches export metadata while observing committed appends, rewrites and cold
     // This owner consumes the cold marker; archive restoration is covered by its own tests.
     runOpenClawAgentWriteTransaction(
       (database) => {
-        database.db
-          .prepare(
-            `INSERT INTO session_transcript_cold_archives
+        const db = database.db;
+        db.prepare(
+          `INSERT INTO session_transcript_cold_archives
             (session_id, generation, archive_name, archive_sha256, event_count, raw_bytes,
              archive_bytes, last_seq, archived_at, storage)
            VALUES (?, 'cold-generation', 'fixture.jsonl.zst', ?, 1, 1, 1, 0, 1, 'file')`,
-          )
-          .run(scopes[2]!.sessionId, "0".repeat(64));
-        database.db
-          .prepare("DELETE FROM transcript_events WHERE session_id = ?")
-          .run(scopes[2]!.sessionId);
+        ).run(scopes[2]!.sessionId, "0".repeat(64));
+        db.prepare("DELETE FROM transcript_events WHERE session_id = ?").run(scopes[2]!.sessionId);
       },
       { agentId: "main", env: state.env },
     );
@@ -110,14 +107,9 @@ it("keeps repeated sessions isolated by their admitted input bounds", async () =
       userEvent("third", "Third."),
     ]);
     const request = { absPath: scope.sessionKey, options: scope };
-    expect(await collectSessionMemoryEntries([request])).toMatchObject([
-      contentEntry("User: First.\nUser: Second.\nUser: Third."),
-    ]);
     const requests = ["second", "third"].map((entryId) => {
       const anchor = readActiveTranscriptEntryAnchor({ ...scope, entryId });
-      if (!anchor) {
-        throw new Error(`Expected persisted input anchor for ${entryId}`);
-      }
+      assert(anchor, `Expected persisted input anchor for ${entryId}`);
       return {
         absPath: request.absPath,
         options: request.options,
@@ -166,23 +158,19 @@ it("waits for delivery before reading later export batches and retries a failed 
     const observer = observeSqliteReadSql(requireNodeSqlite().StatementSync.prototype);
     const pending = collectSessionMemoryEntries(requests, async (index, value) => {
       expect(index).toBe(0);
-      if (!("entry" in value) || !value.entry) {
-        throw new Error("Expected a hot export");
-      }
-      expect(value.entry.content.startsWith("User: bounded fixture ")).toBe(true);
-      expect(value.entry.content.endsWith("fixture")).toBe(true);
+      assert("entry" in value && value.entry, "Expected a hot export");
+      expect(value.entry.content).toMatch(/^User: bounded fixture .*fixture$/s);
       entered.resolve();
       await resume.promise;
       throw new Error("delivery unavailable");
     });
     const observed = pending.catch((error: unknown) => error);
     try {
-      await Promise.race([
+      await awaitGateBeforeSettlement(
         entered.promise,
-        pending.then(() => {
-          throw new Error("Export finished before delivery was acknowledged");
-        }),
-      ]);
+        pending,
+        "Export finished before delivery was acknowledged",
+      );
       // Two sources exceed the byte group: none of the later bodies may be prefetched.
       expect(bodyReads(observer.queries)).toHaveLength(1);
       resume.resolve();

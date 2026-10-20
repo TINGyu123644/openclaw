@@ -11,14 +11,11 @@ import { bindSqliteWorkerBackend } from "./session-lifecycle-projection.worker.j
 import { SessionEntryLifecycleUpsertConflictError } from "./session-mutation-conflict-error.js";
 
 function bindBackend(
-  database: ReturnType<typeof openOpenClawAgentDatabase>,
+  { db: database, path: databasePath }: ReturnType<typeof openOpenClawAgentDatabase>,
   environment: NodeJS.ProcessEnv,
 ) {
   return runWithSqliteWorkerStateContext({ environment }, () =>
-    bindSqliteWorkerBackend(
-      { agentId: "main" },
-      { database: database.db, databasePath: database.path },
-    ),
+    bindSqliteWorkerBackend({ agentId: "main" }, { database, databasePath }),
   );
 }
 
@@ -44,9 +41,7 @@ it("keeps upsert preparation current without a read transaction and retains remo
         input: { ...input, removals: [{ sessionKey, expectedSessionId: "current" }] },
       });
       expect(removal).toMatchObject({
-        selected: {
-          projectedRemovals: [{ sessionKey, expectedEntry: { sessionId: "current" } }],
-        },
+        selected: { projectedRemovals: [{ sessionKey, expectedEntry: { sessionId: "current" } }] },
       });
       expect(exec.mock.calls.map(([sql]) => sql)).toEqual(["BEGIN", "COMMIT"]);
       backend.assertSettled?.();

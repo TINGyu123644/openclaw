@@ -7,19 +7,16 @@ import {
   type ModelContextRequest,
 } from "./session-model-context-window.js";
 
-function request(seq: number, message: AgentMessage): ModelContextRequest {
-  return {
-    entry: {
-      type: "message",
-      seq,
-      id: `entry-${seq}`,
-      parentId: seq > 0 ? `entry-${seq - 1}` : null,
-      timestamp: "2026-01-01T00:00:00.000Z",
-      message,
-    },
-    omitCheckpoint: false,
-  };
-}
+const entryBase = (seq: number) => ({
+  seq,
+  id: `entry-${seq}`,
+  parentId: seq > 0 ? `entry-${seq - 1}` : null,
+  timestamp: "2026-01-01T00:00:00.000Z",
+});
+const request = (seq: number, message: AgentMessage): ModelContextRequest => ({
+  entry: { ...entryBase(seq), type: "message", message },
+  omitCheckpoint: false,
+});
 
 function sizing(bytes: number[]) {
   return (requests: readonly ModelContextRequest[]) =>
@@ -101,10 +98,8 @@ it("reserves the compaction event slot before deciding that history exceeds the 
   const boundary: ModelContextRequest = {
     entry: {
       type: "compaction",
-      seq: 0,
+      ...entryBase(0),
       id: "boundary",
-      parentId: null,
-      timestamp: "2026-01-01T00:00:00.000Z",
       summary: "summary",
       firstKeptEntryId: "entry-1",
       tokensBefore: 100,
@@ -121,21 +116,15 @@ it("reserves the compaction event slot before deciding that history exceeds the 
 });
 
 it.each([
-  { prefixBytes: 0, selected: [2, 3, 4] },
-  { prefixBytes: 100, selected: [3, 4] },
+  { prefixBytes: 0, reply: false, selected: [2, 3, 4] },
+  { prefixBytes: 100, reply: false, selected: [3, 4] },
+  { prefixBytes: 100, reply: true, selected: [2, 3, 4] },
 ])(
-  "keeps the absolute byte cutoff with $prefixBytes discarded bytes",
-  ({ prefixBytes, selected }) => {
-    expect(
-      selectSeqs(
-        [1, 2, 3, 4].map((seq) => user(seq)),
-        prefixBytes,
-      ),
-    ).toEqual(selected);
+  "keeps byte cutoff and atomic headroom (prefix: $prefixBytes, reply: $reply)",
+  ({ prefixBytes, reply, selected }) => {
+    const requests = [1, 2, 3, 4].map((seq) =>
+      reply ? assistant(seq, `reply ${seq}`) : user(seq),
+    );
+    expect(selectSeqs(requests, prefixBytes)).toEqual(selected);
   },
 );
-
-it("uses atomic headroom when the newest user turn starts in the discarded prefix", () => {
-  const requests = [1, 2, 3, 4].map((seq) => assistant(seq, `reply ${seq}`));
-  expect(selectSeqs(requests, 100)).toEqual([2, 3, 4]);
-});
