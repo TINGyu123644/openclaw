@@ -1,6 +1,5 @@
 import fs from "node:fs/promises";
 import { expect, it, vi } from "vitest";
-import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import * as cronStore from "../../../cron/store.js";
 import { loadCronStore, saveCronStore } from "../../../cron/store.js";
 import type { CronJob } from "../../../cron/types.js";
@@ -11,26 +10,26 @@ import {
 } from "../../../test-utils/openclaw-test-state.js";
 import { repairLegacyCronStoreWithoutPrompt } from "./legacy-repair.js";
 
-function makeJob(overrides: Partial<CronJob> = {}): CronJob {
-  return {
-    id: "legacy",
-    name: "Legacy",
-    enabled: true,
-    createdAtMs: 1,
-    updatedAtMs: 1,
-    schedule: { kind: "every", everyMs: 60_000 },
-    sessionTarget: "main",
-    wakeMode: "now",
-    payload: { kind: "systemEvent", text: "keep me" },
-    state: {},
-    ...overrides,
-  };
-}
+const makeJob = (overrides: Partial<CronJob> = {}): CronJob => ({
+  id: "legacy",
+  name: "Legacy",
+  enabled: true,
+  createdAtMs: 1,
+  updatedAtMs: 1,
+  schedule: { kind: "every", everyMs: 60_000 },
+  sessionTarget: "main",
+  wakeMode: "now",
+  payload: { kind: "systemEvent", text: "keep me" },
+  state: {},
+  ...overrides,
+});
 
 async function expectArchived(file: string, bytes: string | Buffer) {
   await expect(fs.stat(file)).rejects.toMatchObject({ code: "ENOENT" });
   expect(await fs.readFile(`${file}.migrated`)).toEqual(Buffer.from(bytes));
 }
+
+const repair = (store: string) => repairLegacyCronStoreWithoutPrompt({ cfg: { cron: { store } } });
 
 async function writeSources(
   fixture: OpenClawTestState,
@@ -53,26 +52,15 @@ async function writeSources(
 it("imports pre-July cron jobs and runtime state, preserves current jobs, and archives all history", async () => {
   await withOpenClawTestState({ label: "cron-pre-july" }, async (fixture) => {
     const storePath = fixture.statePath("cron", "jobs.json");
-    const cfg = { cron: { store: storePath } } as OpenClawConfig;
     const current = makeJob({
       id: "current",
-      name: "Current definition",
       enabled: false,
-      agentId: "main",
       updatedAtMs: 8,
-      schedule: { kind: "every", everyMs: 60_000, anchorMs: 1 },
-      payload: { kind: "systemEvent", text: "current" },
       state: { lastRunAtMs: 7 },
     });
     await saveCronStore(storePath, { version: 1, jobs: [current] });
     const retained = (await loadCronStore(storePath)).jobs[0];
-    const legacy = {
-      ...current,
-      id: "legacy",
-      name: "Legacy definition",
-      enabled: true,
-      state: {},
-    };
+    const legacy = makeJob({ name: "Legacy definition" });
     const originals = await writeSources(
       fixture,
       [{ ...current, name: "Stale copy" }, legacy, { ...legacy, id: undefined, name: "Idless" }],
@@ -82,7 +70,7 @@ it("imports pre-July cron jobs and runtime state, preserves current jobs, and ar
         "runs/other.jsonl": "unparseable historical line\n",
       },
     );
-    const result = await repairLegacyCronStoreWithoutPrompt({ cfg });
+    const result = await repair(storePath);
     const jobs = (await loadCronStore(storePath)).jobs;
     expect(jobs).toHaveLength(3);
     expect(jobs.find((job) => job.id === "current")).toEqual(retained);
@@ -97,13 +85,13 @@ it("imports pre-July cron jobs and runtime state, preserves current jobs, and ar
       expect(result.warnings.join("\n")).toContain(`${filePath}.migrated`);
     }
     expect(result.warnings.join("\n")).toContain("Historical runs remain readable");
-    expect(await repairLegacyCronStoreWithoutPrompt({ cfg })).toEqual({
+    expect(await repair(storePath)).toEqual({
       changes: [],
       warnings: [],
     });
     expect((await loadCronStore(storePath)).jobs).toEqual(jobs);
     await fs.writeFile(storePath, originals.get(storePath)!);
-    await repairLegacyCronStoreWithoutPrompt({ cfg });
+    await repair(storePath);
     expect((await loadCronStore(storePath)).jobs).toEqual(jobs);
   });
 });
@@ -111,9 +99,7 @@ it("imports pre-July cron jobs and runtime state, preserves current jobs, and ar
 it("archives uninterpretable cron definitions with actionable recovery instead of blocking Doctor", async () => {
   await withOpenClawTestState({ label: "cron-malformed-legacy" }, async (fixture) => {
     const storePath = await fixture.writeText("cron/jobs.json", "{truncated legacy definition");
-    const result = await repairLegacyCronStoreWithoutPrompt({
-      cfg: { cron: { store: storePath } } as OpenClawConfig,
-    });
+    const result = await repair(storePath);
     await expectArchived(storePath, "{truncated legacy definition");
     expect(result.warnings.join("\n")).toContain(
       `Recover job definitions from ${storePath}.migrated`,
@@ -153,9 +139,8 @@ it.each(["load", "commit"])(
       if (phase === "load") {
         db.exec(rejection);
       }
-      const cfg = { cron: { store: storePath } } as OpenClawConfig;
       try {
-        await expect(repairLegacyCronStoreWithoutPrompt({ cfg })).rejects.toThrow(
+        await expect(repair(storePath)).rejects.toThrow(
           phase === "load"
             ? "unexpected trigger reject_legacy_cron"
             : "synthetic cron import failure",
@@ -170,7 +155,7 @@ it.each(["load", "commit"])(
         }
       }
       expect((await loadCronStore(storePath)).jobs).toEqual([]);
-      await repairLegacyCronStoreWithoutPrompt({ cfg });
+      await repair(storePath);
       expect((await loadCronStore(storePath)).jobs).toMatchObject([
         { id: "legacy", state: { lastRunAtMs: 11 } },
       ]);

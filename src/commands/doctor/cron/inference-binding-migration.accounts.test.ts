@@ -7,7 +7,7 @@ import {
   loadSessionEntry,
 } from "../../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../../config/sessions/types.js";
-import type { ModelDefinitionConfig } from "../../../config/types.models.js";
+import type { ModelDefinitionConfig, ModelProviderConfig } from "../../../config/types.models.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { loadCronJobsStore, saveCronJobsStore } from "../../../cron/store.js";
 import type { CronStoredJob } from "../../../cron/types.js";
@@ -23,8 +23,8 @@ import { inspectCronJobsForDoctor } from "./store-repair.js";
 
 afterEach(() => vi.restoreAllMocks());
 
-function withAccounts(run: (state: OpenClawTestState) => Promise<void>) {
-  return withOpenClawTestState(
+const withAccounts = (run: (state: OpenClawTestState) => Promise<void>) =>
+  withOpenClawTestState(
     {
       label: "cron-inference-accounts",
       env: { OPENAI_API_KEY: undefined, OPENAI_OAUTH_TOKEN: undefined },
@@ -36,39 +36,35 @@ function withAccounts(run: (state: OpenClawTestState) => Promise<void>) {
       await run(state);
     },
   );
-}
 
-function config(state: OpenClawTestState, model = "openai/gpt-5.5"): OpenClawConfig {
-  return {
-    agents: {
-      entries: { main: { agentDir: state.agentDir(), workspace: state.workspaceDir } },
-      defaults: { model },
-    },
-    plugins: { allow: ["openai"], slots: { memory: "none" } },
-  };
-}
+const config = (
+  state: OpenClawTestState,
+  defaults: NonNullable<OpenClawConfig["agents"]>["defaults"] = { model: "openai/gpt-5.5" },
+): OpenClawConfig => ({
+  agents: {
+    entries: { main: { agentDir: state.agentDir(), workspace: state.workspaceDir } },
+    defaults,
+  },
+  plugins: { allow: ["openai"], slots: { memory: "none" } },
+});
 
-function apiProfile(
+const apiProfile = (
   profileId: string,
   key: string,
   provider = profileId.slice(0, profileId.indexOf(":")),
-) {
-  return {
-    profileId,
-    credential: { type: "api_key" as const, provider, key },
-  };
-}
+) => ({
+  profileId,
+  credential: { type: "api_key" as const, provider, key },
+});
 
-function saveProfiles(...profiles: Parameters<typeof persistAuthProfileBatch>[0]["profiles"]) {
-  return persistAuthProfileBatch({ profiles });
-}
+const saveProfiles = (...profiles: Parameters<typeof persistAuthProfileBatch>[0]["profiles"]) =>
+  persistAuthProfileBatch({ profiles });
 
-function saveJobs(path: string, ...jobs: CronStoredJob[]) {
-  return saveCronJobsStore(path, { version: 1, jobs });
-}
+const saveJobs = (path: string, ...jobs: CronStoredJob[]) =>
+  saveCronJobsStore(path, { version: 1, jobs });
 
-function session(id: string, overrides: Partial<SessionEntry>) {
-  return replaceSessionEntry(
+const session = (id: string, overrides: Partial<SessionEntry>) =>
+  replaceSessionEntry(
     { agentId: "main", sessionKey: `agent:main:cron:${id}` },
     {
       sessionId: id,
@@ -79,80 +75,64 @@ function session(id: string, overrides: Partial<SessionEntry>) {
       ...overrides,
     },
   );
-}
 
-function configuredModel(id: string): ModelDefinitionConfig {
-  return {
-    id,
-    name: id,
-    reasoning: false,
-    input: ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 8192,
-    maxTokens: 1024,
-  };
-}
+const configuredModel = (id: string): ModelDefinitionConfig => ({
+  id,
+  name: id,
+  reasoning: false,
+  input: ["text"],
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  contextWindow: 8192,
+  maxTokens: 1024,
+});
 
-function job(id: string, model?: string): CronStoredJob {
-  return {
-    id,
-    name: id,
-    agentId: "main",
-    enabled: false,
-    createdAtMs: 1,
-    updatedAtMs: 1,
-    schedule: { kind: "every", everyMs: 60_000, anchorMs: 1 },
-    sessionTarget: "isolated",
-    wakeMode: "now",
-    payload: { kind: "agentTurn", message: "Synthetic work", ...(model ? { model } : {}) },
-    delivery: { mode: "none" },
-    state: {},
-  };
-}
+const provider = (apiKey: string, baseUrl: string): ModelProviderConfig => ({
+  api: "openai-completions",
+  auth: "api-key",
+  baseUrl,
+  apiKey,
+  models: [configuredModel("model")],
+});
+
+const job = (id: string, model?: string): CronStoredJob => ({
+  id,
+  name: id,
+  agentId: "main",
+  enabled: false,
+  createdAtMs: 1,
+  updatedAtMs: 1,
+  schedule: { kind: "every", everyMs: 60_000, anchorMs: 1 },
+  sessionTarget: "isolated",
+  wakeMode: "now",
+  payload: { kind: "agentTurn", message: "Synthetic work", ...(model ? { model } : {}) },
+  delivery: { mode: "none" },
+  state: {},
+});
 
 it("records the planner's first account for ambiguous jobs, keeps direct keys unbound and refuses missing accounts instead of pinning a previous fallback", async () => {
   await withAccounts(async (state) => {
-    const base = config(state);
-    const cfg: OpenClawConfig = {
-      ...base,
-      agents: {
-        ...base.agents,
-        defaults: {
-          systemAgent: { agentId: "main" },
-          model: "openai/gpt-5.5",
-          models: { "openai/gpt-5.4": { agentRuntime: { id: "codex" } } },
-          modelPolicy: {
-            allow: [
-              "openai/gpt-5.5",
-              "openai/gpt-5.4",
-              "synthetic/model",
-              "literal/model",
-              "ollama/llama3.3",
-            ],
-          },
-        },
+    const cfg = config(state, {
+      systemAgent: { agentId: "main" },
+      model: "openai/gpt-5.5",
+      models: { "openai/gpt-5.4": { agentRuntime: { id: "codex" } } },
+      modelPolicy: {
+        allow: [
+          "openai/gpt-5.5",
+          "openai/gpt-5.4",
+          "synthetic/model",
+          "literal/model",
+          "ollama/llama3.3",
+        ],
       },
-      models: {
-        providers: {
-          synthetic: {
-            api: "openai-completions",
-            auth: "api-key",
-            baseUrl: "https://invalid.test/v1",
-            apiKey: "synthetic:stored",
-            models: [configuredModel("model")],
-          },
-          literal: {
-            api: "openai-completions",
-            auth: "api-key",
-            baseUrl: "https://literal.invalid.test/v1",
-            apiKey: "synthetic-direct-key",
-            models: [configuredModel("model")],
-          },
-          ollama: {
-            api: "ollama",
-            baseUrl: "http://127.0.0.1:11434",
-            models: [configuredModel("llama3.3")],
-          },
+    });
+    cfg.models = {
+      providers: {
+        synthetic: provider("synthetic:stored", "https://invalid.test/v1"),
+        literal: provider("synthetic-direct-key", "https://literal.invalid.test/v1"),
+        ollama: {
+          api: "ollama",
+          baseUrl: "http://127.0.0.1:11434",
+          models: [configuredModel("llama3.3")],
         },
       },
     };
@@ -174,12 +154,10 @@ it("records the planner's first account for ambiguous jobs, keeps direct keys un
     });
     const sessionScope = { agentId: "main", sessionKey: "agent:main:cron:session" };
     await session("session", {
-      sessionId: "selected",
       authProfileOverride: "openai:b",
       authProfileOverrideSource: "user",
     });
     await session("previous-fallback", {
-      sessionId: "fallback",
       providerOverride: "synthetic",
       modelOverride: "model",
       modelOverrideSource: "auto",
@@ -187,7 +165,6 @@ it("records the planner's first account for ambiguous jobs, keeps direct keys un
       model: "model",
     });
     await session("native-session", {
-      sessionId: "native-selected",
       agentRuntimeOverride: "codex",
       authProfileOverride: "openai:a",
       authProfileOverrideSource: "user",
@@ -258,13 +235,16 @@ it("records the planner's first account for ambiguous jobs, keeps direct keys un
       expect(warnings).not.toContain("synthetic-direct-key");
       const saved = (await loadCronJobsStore(storePath)).jobs;
       // A previous auto fallback is not the job's account: it keeps the default's first account.
-      expect(Object.fromEntries(saved.map((j) => [j.id, j.inferenceBinding]))).toMatchObject({
+      const bindings = {
         explicit: { profileId: "openai:a", source: "user" },
         session: { profileId: "openai:b", source: "user" },
         ambiguous: { profileId: "openai:a", source: "auto" },
         "previous-fallback": { provider: "openai", profileId: "openai:a" },
         "provider-account": { provider: "synthetic", profileId: "synthetic:stored" },
-      });
+      };
+      expect(Object.fromEntries(saved.map((j) => [j.id, j.inferenceBinding]))).toMatchObject(
+        bindings,
+      );
       expect((await loadCronJobsStore(laterPath)).jobs[0]?.inferenceBinding).toMatchObject({
         profileId: "openai:a",
       });
@@ -273,17 +253,8 @@ it("records the planner's first account for ambiguous jobs, keeps direct keys un
           (entry) => entry.id === "malformed",
         ),
       ).toEqual(malformedBefore);
-      for (const id of [
-        "missing",
-        "direct",
-        "local",
-        "deleted-agent",
-        "unavailable-model",
-        "native-config",
-        "native-session",
-        "native-locked",
-      ]) {
-        expect(saved.find((j) => j.id === id)).toEqual(original.find((j) => j.id === id));
+      for (const unchanged of original.filter((j) => !(j.id in bindings))) {
+        expect(saved.find((j) => j.id === unchanged.id)).toEqual(unchanged);
       }
       expect(loadSessionEntry(sessionScope)).toEqual(selectedSession);
     });
@@ -299,7 +270,7 @@ it.each([
     const personalId =
       "personal:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222";
     const cfg: OpenClawConfig = {
-      ...config(state, "openai/gpt-5.4"),
+      ...config(state, { model: "openai/gpt-5.4" }),
       auth: { order: { openai: [personalId, "openai:shared"] } },
     };
     await state.writeConfig(cfg);
@@ -311,7 +282,6 @@ it.each([
     const sessionScope = { agentId: "main", sessionKey: "agent:main:cron:personal-selection" };
     if (linked) {
       await session("personal-selection", {
-        sessionId: "original-linked-session",
         authProfileOverride: personalId,
         authProfileOverrideSource: "user-link",
       });
