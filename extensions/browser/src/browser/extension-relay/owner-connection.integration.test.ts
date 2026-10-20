@@ -13,6 +13,9 @@ import { withConnectedDaemon } from "./relay-coexistence.test-support.js";
 
 afterEach(clearRuntimeConfigSnapshot);
 
+const connectOwner = (port: number, token: string) =>
+  authenticateRelayOwner({ port, token, profile: "chrome", signal: new AbortController().signal });
+
 function ownerRequests(ws: WebSocket) {
   let sequence = 0;
   return async (op: string, fields: object = {}) => {
@@ -34,15 +37,8 @@ function ownerRequests(ws: WebSocket) {
 
 it("scopes references to their authenticated connection and releases native claims on peer loss", async () => {
   await withConnectedDaemon(async ({ port, token, extension, holdDetach }) => {
-    const connect = () =>
-      authenticateRelayOwner({
-        port,
-        token,
-        profile: "chrome",
-        signal: new AbortController().signal,
-      });
-    const first = await connect();
-    const second = await connect();
+    const first = await connectOwner(port, token);
+    const second = await connectOwner(port, token);
     const request = ownerRequests(first.ws);
     const other = ownerRequests(second.ws);
     const hold = holdDetach();
@@ -69,16 +65,12 @@ it("scopes references to their authenticated connection and releases native clai
           }
         });
       });
-      first.ws.send(
-        JSON.stringify({
-          stream,
-          frame: JSON.stringify({
-            id: 1,
-            method: "Target.setAutoAttach",
-            params: { autoAttach: true, flatten: true },
-          }),
-        }),
-      );
+      const frame = JSON.stringify({
+        id: 1,
+        method: "Target.setAutoAttach",
+        params: { autoAttach: true, flatten: true },
+      });
+      first.ws.send(JSON.stringify({ stream, frame }));
       await attached;
       await stopBrowserControlService();
       first.ws.terminate();
@@ -102,15 +94,8 @@ it("scopes references to their authenticated connection and releases native clai
 
 it("owns malformed-frame errors after owner authentication without stopping the relay", async () => {
   await withConnectedDaemon(async ({ port, token, extension }) => {
-    const connect = () =>
-      authenticateRelayOwner({
-        port,
-        token,
-        profile: "chrome",
-        signal: new AbortController().signal,
-      });
-    const failed = await connect();
-    const healthy = await connect();
+    const failed = await connectOwner(port, token);
+    const healthy = await connectOwner(port, token);
     try {
       const closed = once(failed.ws, "close");
       failed.ws.send("invalid client frame", { mask: false });

@@ -1,4 +1,3 @@
-// Extension relay host-local token secret.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,11 +6,13 @@ import { ensureExtensionRelayToken, readExtensionRelayToken } from "./relay-auth
 
 let stateDir = "";
 let secretPath = "";
+let credentials = "";
 let env: NodeJS.ProcessEnv;
 
 beforeEach(() => {
   stateDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-relay-auth-")));
-  secretPath = path.join(stateDir, "credentials", "browser-extension-relay.secret");
+  credentials = path.join(stateDir, "credentials");
+  secretPath = path.join(credentials, "browser-extension-relay.secret");
   env = { OPENCLAW_STATE_DIR: stateDir };
 });
 afterEach(() => {
@@ -20,42 +21,35 @@ afterEach(() => {
 });
 
 describe("extension relay host-local secret", () => {
-  it.each([{ name: "symlinked directory", mode: 0o750, symlink: true }])(
-    "reuses a valid key without mutating its $name",
-    async ({ mode, symlink }) => {
-      const first = await ensureExtensionRelayToken(env);
-      const credentials = path.dirname(secretPath);
-      if (process.platform !== "win32") {
-        fs.chmodSync(credentials, mode);
-      }
-      if (symlink) {
-        const target = path.join(stateDir, "credential-target");
-        fs.renameSync(credentials, target);
-        fs.symlinkSync(target, credentials, "junction");
-      }
-      const before = fs.statSync(secretPath);
-      const bytes = fs.readFileSync(secretPath);
-      await expect(ensureExtensionRelayToken(env)).resolves.toBe(first);
-      expect(readExtensionRelayToken(env)).toBe(first);
-      expect(fs.readFileSync(secretPath)).toEqual(bytes);
-      expect(fs.statSync(secretPath)).toMatchObject({
-        dev: before.dev,
-        ino: before.ino,
-        mode: before.mode,
-      });
-      expect(fs.lstatSync(credentials).isSymbolicLink()).toBe(symlink);
-      if (process.platform !== "win32") {
-        expect(fs.statSync(credentials).mode & 0o777).toBe(mode);
-      }
-    },
-  );
+  it("reuses a valid key without mutating its symlinked directory", async () => {
+    const first = await ensureExtensionRelayToken(env);
+    if (process.platform !== "win32") {
+      fs.chmodSync(credentials, 0o750);
+    }
+    const target = path.join(stateDir, "credential-target");
+    fs.renameSync(credentials, target);
+    fs.symlinkSync(target, credentials, "junction");
+    const before = fs.statSync(secretPath);
+    const bytes = fs.readFileSync(secretPath);
+    await expect(ensureExtensionRelayToken(env)).resolves.toBe(first);
+    expect(readExtensionRelayToken(env)).toBe(first);
+    expect(fs.readFileSync(secretPath)).toEqual(bytes);
+    expect(fs.statSync(secretPath)).toMatchObject({
+      dev: before.dev,
+      ino: before.ino,
+      mode: before.mode,
+    });
+    expect(fs.lstatSync(credentials).isSymbolicLink()).toBe(true);
+    if (process.platform !== "win32") {
+      expect(fs.statSync(credentials).mode & 0o777).toBe(0o750);
+    }
+  });
 
   it.each([
     { name: "simultaneous first callers", writerStarted: false, symlink: false },
     { name: "a writer in progress through a directory alias", writerStarted: true, symlink: true },
   ])("adopts the first writer's token with $name", async ({ writerStarted, symlink }) => {
     const writerToken = "a1".repeat(32);
-    const credentials = path.dirname(secretPath);
     const target = symlink ? path.join(stateDir, "credential-target") : credentials;
     fs.mkdirSync(target, { mode: 0o700 });
     if (symlink) {
@@ -94,17 +88,17 @@ describe("extension relay host-local secret", () => {
   it("rejects creating a missing key through a symlinked credential directory", async () => {
     const target = path.join(stateDir, "credential-target");
     fs.mkdirSync(target, { mode: 0o700 });
-    fs.symlinkSync(target, path.dirname(secretPath), "junction");
+    fs.symlinkSync(target, credentials, "junction");
     await expect(ensureExtensionRelayToken(env)).rejects.toThrow("must not be a symlink");
     expect(fs.readdirSync(target)).toEqual([]);
-    expect(fs.lstatSync(path.dirname(secretPath)).isSymbolicLink()).toBe(true);
+    expect(fs.lstatSync(credentials).isSymbolicLink()).toBe(true);
   });
 
   it.each([
     { name: "empty", content: "" },
     { name: "malformed", content: "not-a-relay-token\n" },
   ])("rejects a persistent $name secret without replacing it", async ({ content }) => {
-    fs.mkdirSync(path.dirname(secretPath), { mode: 0o700 });
+    fs.mkdirSync(credentials, { mode: 0o700 });
     fs.writeFileSync(secretPath, content, { flag: "wx", mode: 0o600 });
     const before = fs.statSync(secretPath);
     await expect(ensureExtensionRelayToken(env)).rejects.toMatchObject({
@@ -114,43 +108,33 @@ describe("extension relay host-local secret", () => {
     expect(fs.statSync(secretPath)).toMatchObject({ dev: before.dev, ino: before.ino });
   });
 
-  it.runIf(process.platform !== "win32").each([0o644])(
-    "self-heals a secret with mode %i to 0600 and still reads it",
-    async (mode) => {
+  describe.runIf(process.platform !== "win32")("POSIX secret protection", () => {
+    it("self-heals a secret with mode 0644 to 0600 and still reads it", async () => {
       const token = await ensureExtensionRelayToken(env);
-      fs.chmodSync(secretPath, mode);
+      fs.chmodSync(secretPath, 0o644);
       expect(readExtensionRelayToken(env)).toBe(token);
       expect(fs.statSync(secretPath).mode & 0o777).toBe(0o600);
-    },
-  );
+    });
 
-  it.runIf(process.platform !== "win32")(
-    "refuses a foreign-owned secret without changing it",
-    async () => {
+    it("refuses a foreign-owned secret without changing it", async () => {
       const token = await ensureExtensionRelayToken(env);
       const owner = fs.statSync(secretPath).uid;
       vi.spyOn(process, "getuid").mockReturnValue(owner + 1);
       expect(readExtensionRelayToken(env)).toBeNull();
       await expect(ensureExtensionRelayToken(env)).rejects.toThrow("unreadable/malformed");
       expect(fs.readFileSync(secretPath, "utf8").trim()).toBe(token);
-    },
-  );
+    });
 
-  it.runIf(process.platform !== "win32")(
-    "refuses a broad-mode secret when tightening fails",
-    async () => {
+    it("refuses a broad-mode secret when tightening fails", async () => {
       await ensureExtensionRelayToken(env);
       fs.chmodSync(secretPath, 0o644);
       vi.spyOn(fs, "fchmodSync").mockImplementation(() => {
         throw new Error("permission denied");
       });
       expect(readExtensionRelayToken(env)).toBeNull();
-    },
-  );
+    });
 
-  it.runIf(process.platform !== "win32")(
-    "rejects a key path swapped after inspection without changing its replacement",
-    async () => {
+    it("rejects a swapped key path without changing its replacement", async () => {
       await ensureExtensionRelayToken(env);
       fs.chmodSync(secretPath, 0o644);
       const replacement = path.join(stateDir, "replacement");
@@ -166,8 +150,8 @@ describe("extension relay host-local secret", () => {
 
       expect.soft(readExtensionRelayToken(env)).toBeNull();
       expect(fs.statSync(replacement).mode & 0o777).toBe(0o644);
-    },
-  );
+    });
+  });
 
   it("refuses a symlinked secret", async () => {
     const token = await ensureExtensionRelayToken(env);
