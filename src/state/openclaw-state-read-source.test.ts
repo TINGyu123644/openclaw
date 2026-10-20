@@ -15,6 +15,32 @@ import {
 } from "./openclaw-state-read-worker.js";
 import { captureOpenClawStateWorkerContext } from "./openclaw-state-worker-context.js";
 
+function withReadGeneration(
+  workerUrl: URL,
+  operation: (source: ReturnType<typeof captureOpenClawStateReadSource>) => Promise<void>,
+) {
+  const moduleUrl = resolveRuntimeProcessEntrypointUrl("stateRead");
+  return withRuntimeWorkerGeneration(
+    async (bind) => {
+      bind((url) => (url.href === moduleUrl.href ? workerUrl : url));
+      await operation(captureOpenClawStateReadSource());
+    },
+    async () => {},
+  );
+}
+
+function readFixture() {
+  const { options, pathname } = source();
+  return {
+    location: {
+      context: captureOpenClawStateWorkerContext(options),
+      location: pathname,
+      checkFreshAdmission: false,
+    },
+    authority: { signal: new AbortController().signal, assertCurrent: () => {} },
+  };
+}
+
 it("retires cached readers after independent custody joins and permits reuse", async () => {
   const { options } = source();
   const nativeSource = captureRetainedNativeWorkerSource();
@@ -71,61 +97,40 @@ it.each([true, false])(
 );
 
 it("keeps lazy reads with their captured generation when another generation dispatches them", async () => {
-  const { options } = source();
-  const context = captureOpenClawStateWorkerContext(options);
-  const location = { context, location: options.path, checkFreshAdmission: false };
-  const authority = { signal: new AbortController().signal, assertCurrent: () => {} };
-  const moduleUrl = resolveRuntimeProcessEntrypointUrl("stateRead");
+  const { location, authority } = readFixture();
   const firstUrl = new URL("file:///synthetic/first/state-reader.mjs");
   const secondUrl = new URL("file:///synthetic/second/state-reader.mjs");
-  await withRuntimeWorkerGeneration(
-    async (bindFirst) => {
-      bindFirst((url) => (url.href === moduleUrl.href ? firstUrl : url));
-      const first = captureOpenClawStateReadSource();
-      expect(mock.create).not.toHaveBeenCalled();
-      expect(mock.selectSqlite).not.toHaveBeenCalled();
-      await withRuntimeWorkerGeneration(
-        async (bindSecond) => {
-          bindSecond((url) => (url.href === moduleUrl.href ? secondUrl : url));
-          const second = captureOpenClawStateReadSource();
-          const firstTask = queueTask();
-          const secondTask = queueTask();
-          firstTask.result.resolve(emptyReply);
-          secondTask.result.resolve(emptyReply);
-          const firstTransport = first.createTransport({ type: "backup.runs" });
-          const secondTransport = second.createTransport({ type: "backup.runs" });
-          try {
-            await expect(firstTransport.startRead(location, authority)).resolves.toEqual({
-              value: emptyReply,
-            });
-            await expect(secondTransport.startRead(location, authority)).resolves.toEqual({
-              value: emptyReply,
-            });
-            expect(mock.create).toHaveBeenCalledTimes(2);
-            expect(mock.create).toHaveBeenNthCalledWith(
-              1,
-              expect.objectContaining({ workerUrl: firstUrl }),
-              expect.objectContaining({ retainedTransport: true }),
-            );
-            expect(mock.create).toHaveBeenNthCalledWith(
-              2,
-              expect.objectContaining({ workerUrl: secondUrl }),
-              expect.objectContaining({ retainedTransport: true }),
-            );
-          } finally {
-            await Promise.all([firstTransport.startClose(), secondTransport.startClose()]);
-          }
-        },
-        async () => {},
-      );
-    },
-    async () => {},
-  );
+  await withReadGeneration(firstUrl, async (first) => {
+    expect(mock.create).not.toHaveBeenCalled();
+    expect(mock.selectSqlite).not.toHaveBeenCalled();
+    await withReadGeneration(secondUrl, async (second) => {
+      const transports = [first, second].map((reader) => {
+        queueTask().result.resolve(emptyReply);
+        return reader.createTransport({ type: "backup.runs" });
+      });
+      try {
+        for (const transport of transports) {
+          await expect(transport.startRead(location, authority)).resolves.toEqual({
+            value: emptyReply,
+          });
+        }
+        expect(mock.create).toHaveBeenCalledTimes(2);
+        for (const [index, workerUrl] of [firstUrl, secondUrl].entries()) {
+          expect(mock.create).toHaveBeenNthCalledWith(
+            index + 1,
+            expect.objectContaining({ workerUrl }),
+            expect.objectContaining({ retainedTransport: true }),
+          );
+        }
+      } finally {
+        await Promise.all(transports.map((transport) => transport.startClose()));
+      }
+    });
+  });
 });
 
 it("joins captured domain cleanup before retiring its pool and execution generation", async () => {
-  const { options } = source();
-  const context = captureOpenClawStateWorkerContext(options);
+  const { location, authority } = readFixture();
   const scope = new AsyncLocalStorage<string>();
   const ownerCloseStarted = createDeferredCore();
   const ownerMayClose = createDeferredCore();
@@ -153,10 +158,7 @@ it("joins captured domain cleanup before retiring its pool and execution generat
         events.push("domain closing");
         ownerCloseStarted.resolve();
         await ownerMayClose.promise;
-        await transport.startRead(
-          { context, location: options.path, checkFreshAdmission: false },
-          { signal: new AbortController().signal, assertCurrent: () => {} },
-        );
+        await transport.startRead(location, authority);
         await transport.startClose();
         unregister();
         events.push("domain closed");
@@ -191,7 +193,7 @@ it("joins captured domain cleanup before retiring its pool and execution generat
 it.each(["workerPlacements.changeSnapshot", "agentDeletionJournal.status"] as const)(
   "captures and charges selectors before queued dispatch (%s)",
   async (type) => {
-    const { pathname, options } = source();
+    const { location, authority } = readFixture();
     const selector = "选择🦞".repeat(512);
     const command =
       type === "workerPlacements.changeSnapshot"
@@ -206,14 +208,7 @@ it.each(["workerPlacements.changeSnapshot", "agentDeletionJournal.status"] as co
     }
     const dispatch = createDeferredCore();
     const task = queueTask(dispatch.promise);
-    const read = transport.startRead(
-      {
-        context: captureOpenClawStateWorkerContext(options),
-        location: pathname,
-        checkFreshAdmission: false,
-      },
-      { signal: new AbortController().signal, assertCurrent: () => {} },
-    );
+    const read = transport.startRead(location, authority);
     try {
       const submitted = await task.submitted;
       dispatch.resolve();

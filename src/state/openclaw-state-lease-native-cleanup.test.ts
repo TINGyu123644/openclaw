@@ -3,6 +3,13 @@ import { closeOpenClawStateDatabaseAsync } from "./openclaw-state-db-cache.js";
 import { withOpenClawStateLease } from "./openclaw-state-lease.js";
 import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context.types.js";
 
+const options = {
+  scope: "core:plugin-lifecycle",
+  key: "global",
+  database: { scope: "shared" as const },
+  leaseMs: 60_000,
+  waitMs: 0,
+};
 const storage = vi.hoisted(() => ({
   held: false,
   unavailable: false,
@@ -82,13 +89,6 @@ afterEach(async () => {
 });
 
 it("releases a native acquisition that expires before callback entry", async () => {
-  const options = {
-    scope: "core:plugin-lifecycle",
-    key: "expired-startup",
-    database: { scope: "shared" as const },
-    leaseMs: 60_000,
-    waitMs: 0,
-  };
   storage.remainingMs = -1;
   const entered = vi.fn();
   await expect(withOpenClawStateLease(options, entered)).rejects.toMatchObject({
@@ -100,16 +100,9 @@ it("releases a native acquisition that expires before callback entry", async () 
 });
 
 it("releases a failed native lease cleanup when the shared resource owner closes", async () => {
-  const options = {
-    scope: "core:plugin-lifecycle",
-    key: "global",
-    database: { scope: "shared" as const },
-    leaseMs: 60_000,
-    waitMs: 0,
-    processBound: true,
-  };
+  const processOptions = { ...options, processBound: true };
   await expect(
-    withOpenClawStateLease(options, async () => {
+    withOpenClawStateLease(processOptions, async () => {
       await closeOpenClawStateDatabaseAsync();
       storage.unavailable = true;
       throw new Error("Synthetic operation lost maintenance admission");
@@ -117,5 +110,7 @@ it("releases a failed native lease cleanup when the shared resource owner closes
   ).rejects.toThrow("State lease operation and cleanup failed");
   storage.unavailable = false;
   await closeOpenClawStateDatabaseAsync();
-  await expect(withOpenClawStateLease(options, async () => "recovered")).resolves.toBe("recovered");
+  await expect(withOpenClawStateLease(processOptions, async () => "recovered")).resolves.toBe(
+    "recovered",
+  );
 });

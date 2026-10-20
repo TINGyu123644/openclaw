@@ -77,57 +77,39 @@ beforeEach(() => {
   });
 });
 
-it("reads plugin metadata without loading unrelated command handlers", async () => {
-  const reply = await mock.handler({
-    ...request,
+it.each([
+  {
     command: {
-      type: "plugins.metadata.read",
+      type: "plugins.metadata.read" as const,
       input: { stateKeys: ["plugins.bundledDiscovery"] },
     },
-  });
+    result: { rows: [{ state_key: "plugins.bundledDiscovery", value_json: '"allowlist"' }] },
+  },
+  {
+    command: { type: "gatewayOwnerLease.read" as const, schemaMaintenance: false },
+    result: { lease: undefined },
+  },
+  {
+    command: { type: "agentDatabaseRegistry.read" as const },
+    result: { result: { status: "available", entries: [] } },
+  },
+])("reads $command.type without loading unrelated handlers", async ({ command, result }) => {
+  const reply = await mock.handler({ ...request, command });
   expect(reply).toEqual({
     ok: true,
-    type: "plugins.metadata.read",
+    type: command.type,
     sourceAdmitted: true,
-    rows: [{ state_key: "plugins.bundledDiscovery", value_json: '"allowlist"' }],
+    ...result,
   });
-  expect(mock.unrelatedHandlerLoaded).toBe(false);
-});
-
-it("reads the ownership lease without loading unrelated command handlers", async () => {
-  const reply = await mock.handler({
-    ...request,
-    command: { type: "gatewayOwnerLease.read", schemaMaintenance: false },
-  });
-  expect(reply).toEqual({
-    ok: true,
-    type: "gatewayOwnerLease.read",
-    sourceAdmitted: true,
-    lease: undefined,
-  });
-  expect(mock.unrelatedHandlerLoaded).toBe(false);
-});
-
-it("reads the agent database registry without loading unrelated command handlers", async () => {
-  const reply = await mock.handler({
-    ...request,
-    command: { type: "agentDatabaseRegistry.read" },
-  });
-  expect(reply).toEqual({
-    ok: true,
-    type: "agentDatabaseRegistry.read",
-    sourceAdmitted: true,
-    result: { status: "available", entries: [] },
-  });
-  expect(mock.query).toHaveBeenCalledTimes(1);
-  expect(mock.query).toHaveBeenCalledWith({}, request.databasePath, false);
+  if (command.type === "agentDatabaseRegistry.read") {
+    expect(mock.query).toHaveBeenCalledExactlyOnceWith({}, request.databasePath, false);
+  }
   expect(mock.unrelatedHandlerLoaded).toBe(false);
 });
 
 it.each([
   { type: "backup.runs", outcome: "query-error" },
   { type: "backup.runs", outcome: "schema-error" },
-  { type: "agentDatabaseRegistry.read", outcome: "success" },
   { type: "agentDatabaseRegistry.read", outcome: "query-error" },
   { type: "agentDatabaseRegistry.read", outcome: "schema-error" },
   { type: "agentDatabaseRegistry.read", outcome: "cleanup-error" },
@@ -157,8 +139,7 @@ it.each([
       ok: true,
       type,
       sourceAdmitted,
-      result:
-        outcome === "success" ? { status: "available", entries: [] } : { status: "unavailable" },
+      result: { status: "unavailable" },
     });
   }
   expect(mock.query).toHaveBeenCalledTimes(outcome === "schema-error" ? 0 : 1);
