@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import {
   inspectPersistedAuthProfileStateRaw,
   inspectPersistedAuthProfileStoreRaw,
@@ -40,11 +40,7 @@ function createAuthSource(stateDir: string): string {
         source,
         database,
       );
-      writePersistedAuthProfileStateRaw(
-        { version: 1, order: { openai: ["openai:test"] } },
-        source,
-        database,
-      );
+      writePersistedAuthProfileStateRaw({ version: 1 }, source, database);
     },
     { stateDir },
   );
@@ -69,24 +65,22 @@ afterEach(async () => {
   tempDirs.cleanup();
 });
 
-describe("stage-live-auth-profiles", () => {
-  it.each([
-    "DROP TABLE auth_profile_store;",
-    "DROP TABLE auth_profile_state;",
-    "DROP TABLE auth_profile_store; DROP TABLE auth_profile_state;",
-  ])("fails closed for incomplete auth schema: %s", async (sql) => {
-    const fixture = stagingFixture(sql);
-    await expect(fixture.stage()).rejects.toThrow("canonical auth schema is incomplete");
-    expect(fs.existsSync(resolveAuthProfileDatabasePath(fixture.target))).toBe(false);
-  });
+it.each([
+  "DROP TABLE auth_profile_store;",
+  "DROP TABLE auth_profile_state;",
+  "DROP TABLE auth_profile_store; DROP TABLE auth_profile_state;",
+])("fails closed for incomplete auth schema: %s", async (sql) => {
+  const fixture = stagingFixture(sql);
+  await expect(fixture.stage()).rejects.toThrow("canonical auth schema is incomplete");
+  expect(fs.existsSync(resolveAuthProfileDatabasePath(fixture.target))).toBe(false);
+});
 
-  it("stages a readable store when the state row is absent", async () => {
-    const fixture = stagingFixture("DELETE FROM auth_profile_state;");
-    await expect(fixture.stage()).resolves.toBeUndefined();
-    expect(inspectPersistedAuthProfileStoreRaw(fixture.target).status).toBe("readable");
-    expect(inspectPersistedAuthProfileStateRaw(fixture.target)).toEqual({
-      status: "missing",
-      reason: "row",
-    });
+it("stages a readable store when the state row is absent", async () => {
+  const fixture = stagingFixture("DELETE FROM auth_profile_state;");
+  await expect(fixture.stage()).resolves.toBeUndefined();
+  expect(inspectPersistedAuthProfileStoreRaw(fixture.target).status).toBe("readable");
+  expect(inspectPersistedAuthProfileStateRaw(fixture.target)).toEqual({
+    status: "missing",
+    reason: "row",
   });
 });

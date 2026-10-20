@@ -45,17 +45,35 @@ it.for(fileWaits)(
   },
 );
 
-it.for(fileWaits)("diagnoses missing $name on abort", async ({ wait }, { signal }) => {
-  const file = fixturePath();
-  const cancelled = cancellation(signal);
-  const waiting = wait(file, cancelled.signal);
-  const rejected = expect(waiting).rejects.toMatchObject(fileError(file, cancelled.reason));
-  cancelled.abort();
-  await rejected;
-  await expect(wait(file, cancelled.signal)).rejects.toMatchObject(
-    fileError(file, cancelled.reason),
-  );
-});
+it.for(["file", "PID", "injected delay", "live process"] as const)(
+  "diagnoses %s on abort without waiting for an injected delay",
+  async (kind, { signal }) => {
+    const file = fixturePath();
+    const cancelled = cancellation(signal);
+    const tick = createDeferred();
+    const wait = () =>
+      kind === "live process"
+        ? waitForDead(process.pid, cancelled.signal)
+        : kind === "file"
+          ? waitForFile(file, cancelled.signal)
+          : waitForPidFile(
+              file,
+              cancelled.signal,
+              kind === "injected delay" ? () => tick.promise : undefined,
+            );
+    const diagnostic =
+      kind === "live process"
+        ? { message: `process still alive: ${process.pid}`, cause: cancelled.reason }
+        : fileError(file, cancelled.reason);
+    const rejected = expect(wait()).rejects.toMatchObject(diagnostic);
+    cancelled.abort();
+    await rejected;
+    if (kind === "file" || kind === "PID") {
+      await expect(wait()).rejects.toMatchObject(diagnostic);
+    }
+    tick.resolve();
+  },
+);
 
 it("waits through empty PID contents using the injected delay", async ({ signal }) => {
   const file = fixturePath();
@@ -65,28 +83,6 @@ it("waits through empty PID contents using the injected delay", async ({ signal 
   fsSync.writeFileSync(file, "42\n");
   tick.resolve();
   expect(await waiting).toBe(42);
-});
-
-it("aborts an injected delay without waiting for its completion", async ({ signal }) => {
-  const file = fixturePath();
-  const tick = createDeferred();
-  const cancelled = cancellation(signal);
-  const waiting = waitForPidFile(file, cancelled.signal, () => tick.promise);
-  const rejected = expect(waiting).rejects.toMatchObject(fileError(file, cancelled.reason));
-  cancelled.abort();
-  await rejected;
-  tick.resolve();
-});
-
-it("diagnoses a live process on abort", async ({ signal }) => {
-  const cancelled = cancellation(signal);
-  const waiting = waitForDead(process.pid, cancelled.signal);
-  const rejected = expect(waiting).rejects.toMatchObject({
-    message: `process still alive: ${process.pid}`,
-    cause: cancelled.reason,
-  });
-  cancelled.abort();
-  await rejected;
 });
 
 it("observes real process death before and after abort", async ({ signal, onTestFinished }) => {

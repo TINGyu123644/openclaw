@@ -94,33 +94,29 @@ it("joins the actual cancelled body and ordered cleanup before finishing the tes
 
 it("retains acquisition rollback failure even before a resource reaches the caller", async (context) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "qa-test-rollback-owner-"));
+  context.onTestFinished(() => fs.rm(root, { recursive: true, force: true }));
   const resource = createVitestResourceOwner(root);
   const failure = new Error("acquisition rollback failed");
   const events: string[] = [];
-  try {
-    await withEnvAsync({ TMPDIR: root, TEMP: root, TMP: root }, async () => {
-      const owner = testOwner(new AbortController().signal, events);
-      const run = runQaGatewayTestFixture(
-        owner.context,
-        async ({ verifyCleanup }) => {
-          await verifyCleanup(async () => {
-            events.push("rollback");
-            throw failure;
-          });
-        },
-        record(events, "final-cleanup"),
-      );
-      await expect(run).rejects.toBe(failure);
-      await expect(owner.finish(context)).rejects.toMatchObject({
-        errors: expect.arrayContaining([failure]),
-      });
-      expect(events).toEqual(["registered", "rollback", "final-cleanup"]);
-      expect(() => resource.assertReleased()).toThrow("Unreleased Vitest resource claim");
+  await withEnvAsync({ TMPDIR: root, TEMP: root, TMP: root }, async () => {
+    const owner = testOwner(new AbortController().signal, events);
+    const run = runQaGatewayTestFixture(
+      owner.context,
+      async ({ verifyCleanup }) => {
+        await verifyCleanup(async () => {
+          events.push("rollback");
+          throw failure;
+        });
+      },
+      record(events, "final-cleanup"),
+    );
+    await expect(run).rejects.toBe(failure);
+    await expect(owner.finish(context)).rejects.toMatchObject({
+      errors: expect.arrayContaining([failure]),
     });
-  } finally {
-    // Every promise above is settled; only this deliberately failed synthetic receipt remains.
-    await fs.rm(root, { recursive: true, force: true });
-  }
+    expect(events).toEqual(["registered", "rollback", "final-cleanup"]);
+    expect(() => resource.assertReleased()).toThrow("Unreleased Vitest resource claim");
+  });
 });
 
 it("preserves successful values and refuses an already-cancelled body", async (context) => {

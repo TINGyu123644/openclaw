@@ -28,7 +28,6 @@ it.skipIf(process.platform === "win32")(
         detached: true, stdio: ["ignore", "ignore", "ignore", 3, "ipc"],
       });
       child.once("message", (pid) => process.send({ grandchild: pid, intermediate: process.pid }));
-      // Like a detached command owner, keep its child until custody requests cleanup.
       process.on("SIGTERM", () => child.kill("SIGKILL"));
       child.once("exit", () => process.exit(0));
       setInterval(() => {}, 1000);
@@ -63,16 +62,15 @@ it.skipIf(process.platform === "win32")(
       await instance.startGateway();
       const identity = await (await fetch(`http://127.0.0.1:${instance.port}/readyz`)).json();
       const original = instance.child!;
-      // The exposed PID is the executing Node command, not its relay or anchor.
       expect(original.pid).toBe(identity.pid);
       pids.push(identity.pid, identity.intermediate, identity.grandchild);
       await withinTest(receipts.waitFor("grandchild", "ready"), signal);
 
       await instance.crashGateway();
       expect(original).toMatchObject({ exitCode: null, signalCode: "SIGKILL" });
-      expect(isProcessAlive(identity.pid)).toBe(false);
-      expect(isProcessAlive(identity.intermediate)).toBe(true);
-      expect(isProcessAlive(identity.grandchild)).toBe(true);
+      expect(
+        [identity.pid, identity.intermediate, identity.grandchild].map(isProcessAlive),
+      ).toEqual([false, true, true]);
       await instance.startGateway();
       const replacement = await (await fetch(`http://127.0.0.1:${instance.port}/readyz`)).json();
       expect(instance.child?.pid).toBe(replacement.pid);
@@ -87,15 +85,8 @@ it.skipIf(process.platform === "win32")(
         expect(isProcessAlive(pid), `custody left pid ${pid} alive`).toBe(false);
       }
     } finally {
-      // Failed survival assertions must not strand a detached fixture process.
-      for (const pid of pids.toReversed()) {
-        killPidIfAlive(pid);
-      }
-      try {
-        await instance.cleanup();
-      } finally {
-        await receipts.close();
-      }
+      pids.toReversed().forEach(killPidIfAlive);
+      await instance.cleanup().finally(() => receipts.close());
     }
   },
 );
