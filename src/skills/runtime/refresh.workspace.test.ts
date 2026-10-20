@@ -4,7 +4,10 @@ import { PassThrough, Writable } from "node:stream";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
-import { registerAgentWorkspaceAccess } from "../../agents/workspace-access.js";
+import {
+  registerAgentWorkspaceAccess,
+  type AgentWorkspaceAccess,
+} from "../../agents/workspace-access.js";
 import {
   markGatewayRestartDraining,
   resetGatewayWorkAdmission,
@@ -19,9 +22,9 @@ import { resolveSkillFileHost } from "../skill-file-host.js";
 import { writeSkill } from "../test-support/e2e-test-helpers.js";
 import { resolveWorkshopSkillsDir } from "../workshop/skills-root.js";
 import * as remoteRefresh from "./refresh-remote.js";
-import { getSkillsSnapshotVersion } from "./refresh-state.js";
+import { getSkillsSnapshotVersion as versionOf } from "./refresh-state.js";
 import * as refresh from "./refresh.js";
-import { resolveReusableWorkspaceSkillSnapshot } from "./session-snapshot.js";
+import { resolveReusableWorkspaceSkillSnapshot as resolveSnapshot } from "./session-snapshot.js";
 import { serveWorkspaceSkills } from "./workspace-worker.js";
 
 const releases: Array<() => void> = [];
@@ -40,20 +43,17 @@ const temporary = useAutoCleanupTempDirTracker((cleanup) =>
   }),
 );
 let fixtureRoot: string;
-const fixture = {
-  get workspaceDir() {
-    return path.join(fixtureRoot, "workspace");
-  },
-  async createFixtureDirectory(relative: string) {
-    const directory = path.join(fixtureRoot, relative);
-    await fs.mkdir(directory, { recursive: true });
-    return directory;
-  },
-};
+let workspaceDir: string;
+async function mkdir(relative: string) {
+  const directory = path.join(fixtureRoot, relative);
+  await fs.mkdir(directory, { recursive: true });
+  return directory;
+}
 beforeEach(async () => {
   fixtureRoot = temporary.make("skills-workspace-");
-  await fixture.createFixtureDirectory("workspace/skills");
-  vi.stubEnv("OPENCLAW_STATE_DIR", await fixture.createFixtureDirectory("state"));
+  workspaceDir = path.join(fixtureRoot, "workspace");
+  await mkdir("workspace/skills");
+  vi.stubEnv("OPENCLAW_STATE_DIR", await mkdir("state"));
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
 });
 
@@ -63,9 +63,13 @@ async function waitForSkillsTurn() {
   });
 }
 
-async function snapshot(params: Parameters<typeof resolveReusableWorkspaceSkillSnapshot>[0]) {
-  return (await resolveReusableWorkspaceSkillSnapshot(params)).snapshot;
+async function snapshot(params: Parameters<typeof resolveSnapshot>[0]) {
+  return (await resolveSnapshot(params)).snapshot;
 }
+
+const writeAt = (root: string, name: string, description: string) =>
+  writeSkill({ dir: path.join(root, name), name, description });
+const sources = (root: string) => resolveWorkspaceSkillSourcePlan(root, { workspaceOnly: true });
 
 function watchWorker(workspace: string, output: Writable) {
   const input = new PassThrough();
@@ -76,12 +80,8 @@ function watchWorker(workspace: string, output: Writable) {
     input,
     output,
   });
-  const start = () =>
-    input.write(
-      JSON.stringify({
-        sourcePlan: resolveWorkspaceSkillSourcePlan(workspace, { workspaceOnly: true }),
-      }) + "\n",
-    );
+  const request = JSON.stringify({ sourcePlan: sources(workspace) }) + "\n";
+  const start = () => input.write(request);
   return { input, task, start };
 }
 
@@ -89,34 +89,33 @@ async function expectRetirementPending(
   task: Promise<void>,
   subscription: { signal: AbortSignal; end: () => void },
 ) {
-  let settled = false;
-  const joined = task.then(() => {
-    settled = true;
-  });
-  await waitForSkillsTurn();
+  await awaitGateBeforeSettlement(
+    waitForSkillsTurn(),
+    task,
+    "Retirement settled before transport close",
+  );
   expect(subscription.signal.aborted).toBe(true);
-  expect(settled).toBe(false);
   return async () => {
     subscription.end();
-    await joined;
+    await task;
   };
 }
 
 it("retires remote subscriptions during Gateway drain and reacquires after runtime reset", async () => {
   const { params, subscriptions, access, gateway } = await remoteFixture();
-  await resolveReusableWorkspaceSkillSnapshot(params);
+  await resolveSnapshot(params);
   const original = subscriptions[0]!;
-  const version = getSkillsSnapshotVersion(gateway);
+  const version = versionOf(gateway);
 
   markGatewayRestartDraining("stop (SIGTERM)");
   expect(original.signal.aborted).toBe(true);
   original.emit("change");
-  expect(getSkillsSnapshotVersion(gateway)).toBe(version);
+  expect(versionOf(gateway)).toBe(version);
   await refresh.ensureSkillsWatcher(params);
   expect(access.watchSkills).toHaveBeenCalledTimes(1);
   await access.watchSkills.mock.results[0]!.value;
   await waitForSkillsTurn();
-  expect(getSkillsSnapshotVersion(gateway)).toBe(version);
+  expect(versionOf(gateway)).toBe(version);
 
   // Teardown joins the retired transport; the next runtime gets a fresh signal.
   await refresh.closeSkillsWatchers(true);
@@ -124,31 +123,19 @@ it("retires remote subscriptions during Gateway drain and reacquires after runti
   await refresh.ensureSkillsWatcher(params);
   expect(access.watchSkills).toHaveBeenCalledTimes(2);
   expect(subscriptions[1]!.signal.aborted).toBe(false);
-  const restartedVersion = getSkillsSnapshotVersion(gateway);
+  const restartedVersion = versionOf(gateway);
   original.emit("unavailable");
-  expect(getSkillsSnapshotVersion(gateway)).toBe(restartedVersion);
+  expect(versionOf(gateway)).toBe(restartedVersion);
   subscriptions[1]!.emit("change");
-  expect(getSkillsSnapshotVersion(gateway)).toBeGreaterThan(restartedVersion);
+  expect(versionOf(gateway)).toBeGreaterThan(restartedVersion);
 });
 
 it("waits for an agent's remote skills subscription to close before deletion completes", async () => {
-  const { params, access } = await remoteFixture();
+  const { params, subscriptions } = await remoteFixture({ finishOnAbort: false });
   const closeStarted = createDeferred();
-  const releaseClose = createDeferred();
-  access.watchSkills.mockImplementation(async (_request, _emit, signal) => {
-    await new Promise<void>((resolve) => {
-      signal.addEventListener(
-        "abort",
-        () => {
-          closeStarted.resolve();
-          resolve();
-        },
-        { once: true },
-      );
-    });
-    await releaseClose.promise;
-  });
   await refresh.ensureSkillsWatcher({ ...params, agentId: "worker" });
+  const subscription = subscriptions[0]!;
+  subscription.signal.addEventListener("abort", () => closeStarted.resolve(), { once: true });
   const drain = refresh.closeSkillsWatchersForAgent({ agentId: "worker" });
   try {
     await awaitGateBeforeSettlement(
@@ -156,14 +143,9 @@ it("waits for an agent's remote skills subscription to close before deletion com
       drain,
       "Agent drainage completed before remote watcher cancellation began",
     );
-    let drained = false;
-    void drain.then(() => {
-      drained = true;
-    });
-    await waitForSkillsTurn();
-    expect(drained).toBe(false);
+    await expectRetirementPending(drain, subscription);
   } finally {
-    releaseClose.resolve();
+    subscription.end();
   }
   await drain;
 });
@@ -182,17 +164,13 @@ it("keeps a shared remote subscription until its last agent owner is removed", a
 });
 
 async function remoteFixture(options: { finishOnAbort?: boolean } = {}) {
-  const gateway = fixture.workspaceDir;
-  const host = await fixture.createFixtureDirectory("host");
-  const writes = (description: string) =>
-    writeSkill({
-      dir: path.join(host, "skills", "guide"),
-      name: "guide",
-      description,
-    });
+  const gateway = workspaceDir;
+  const host = await mkdir("host");
+  const writes = (description: string) => writeAt(path.join(host, "skills"), "guide", description);
   await writes("Original host instructions");
+  type Watch = NonNullable<AgentWorkspaceAccess["watchSkills"]>;
   const subscriptions: Array<{
-    emit: (event: "change" | "unavailable" | "available") => void;
+    emit: Parameters<Watch>[1];
     signal: AbortSignal;
     end: () => void;
   }> = [];
@@ -200,17 +178,13 @@ async function remoteFixture(options: { finishOnAbort?: boolean } = {}) {
     bridge: { readFile: vi.fn(), writeFile: vi.fn(), stat: vi.fn() },
     loadSkills: vi.fn(async (_request: WorkspaceSkillSourceRequest) =>
       readWorkspaceSkillSources({
-        sourcePlan: resolveWorkspaceSkillSourcePlan(host, { workspaceOnly: true }),
+        sourcePlan: sources(host),
         limits: resolveSkillDiscoveryLimits(),
         additionalBins: [],
       }),
     ),
-    watchSkills: vi.fn(
-      async (
-        _request: Pick<WorkspaceSkillSourceRequest, "sourcePlan" | "executionWorkspaceDir">,
-        emit: (event: "change" | "unavailable" | "available") => void,
-        signal: AbortSignal,
-      ) =>
+    watchSkills: vi.fn<Watch>(
+      async (_request, emit, signal) =>
         new Promise<void>((end) => {
           subscriptions.push({ emit, signal, end });
           if (options.finishOnAbort !== false) {
@@ -222,19 +196,13 @@ async function remoteFixture(options: { finishOnAbort?: boolean } = {}) {
   const release = registerAgentWorkspaceAccess(gateway, access);
   const config = { plugins: { enabled: false } };
   releases.push(release);
-  return {
-    gateway,
-    writes,
-    subscriptions,
-    access,
-    release,
-    params: { workspaceDir: gateway, config },
-  };
+  const params = { workspaceDir: gateway, config };
+  return { gateway, writes, subscriptions, access, release, params };
 }
 
 it("bounds remote subscriptions by recent access and invalidates evicted source readmission", async () => {
   const { gateway, access, subscriptions } = await remoteFixture();
-  const sourcePlan = resolveWorkspaceSkillSourcePlan(gateway, { workspaceOnly: true });
+  const sourcePlan = sources(gateway);
   const ensure = (index: number) =>
     remoteRefresh.ensureRemoteSkillsWatcher({
       watcherKey: `remote-${index}`,
@@ -253,11 +221,11 @@ it("bounds remote subscriptions by recent access and invalidates evicted source 
   expect(subscriptions[1]!.signal.aborted).toBe(true);
   expect(subscriptions.filter(({ signal }) => !signal.aborted)).toHaveLength(128);
 
-  const evictedVersion = getSkillsSnapshotVersion(gateway);
+  const evictedVersion = versionOf(gateway);
   subscriptions[1]!.emit("change");
-  expect(getSkillsSnapshotVersion(gateway)).toBe(evictedVersion);
+  expect(versionOf(gateway)).toBe(evictedVersion);
   await ensure(1);
-  expect(getSkillsSnapshotVersion(gateway)).toBeGreaterThan(evictedVersion);
+  expect(versionOf(gateway)).toBeGreaterThan(evictedVersion);
   expect(subscriptions[2]!.signal.aborted).toBe(true);
   expect(access.watchSkills).toHaveBeenCalledTimes(130);
   expect(subscriptions.filter(({ signal }) => !signal.aborted)).toHaveLength(128);
@@ -270,7 +238,7 @@ it("joins remote replacement, disposal, and shutdown before releasing their call
     watcherKey: JSON.stringify([gateway, undefined, undefined]),
     workspaceDir: gateway,
     access,
-    sourcePlan: resolveWorkspaceSkillSourcePlan(gateway, { workspaceOnly: true }),
+    sourcePlan: sources(gateway),
   };
   try {
     await remoteRefresh.ensureRemoteSkillsWatcher(params);
@@ -282,9 +250,9 @@ it("joins remote replacement, disposal, and shutdown before releasing their call
       subscriptions[0]!,
     );
     expect(access.watchSkills).toHaveBeenCalledTimes(1);
-    const retiredVersion = getSkillsSnapshotVersion(gateway);
+    const retiredVersion = versionOf(gateway);
     subscriptions[0]!.emit("unavailable");
-    expect(getSkillsSnapshotVersion(gateway)).toBe(retiredVersion);
+    expect(versionOf(gateway)).toBe(retiredVersion);
     await finishReplacement();
     expect(access.watchSkills).toHaveBeenCalledTimes(2);
 
@@ -321,9 +289,9 @@ it("restores snapshot reuse only on verified availability, without adding a cont
   const afterChange = access.loadSkills.mock.calls.length;
   saved = await snapshot({ ...params, existingSnapshot: saved });
   expect(access.loadSkills).toHaveBeenCalledTimes(afterChange + 1);
-  const version = getSkillsSnapshotVersion(gateway);
+  const version = versionOf(gateway);
   subscription.emit("available");
-  expect(getSkillsSnapshotVersion(gateway)).toBe(version);
+  expect(versionOf(gateway)).toBe(version);
   expect(await snapshot({ ...params, existingSnapshot: saved })).toBe(saved);
   expect(access.loadSkills).toHaveBeenCalledTimes(afterChange + 1);
   await writes("Changed under recovered coverage");
@@ -338,38 +306,29 @@ it("restores snapshot reuse only on verified availability, without adding a cont
 });
 
 it("publishes initial availability and completed skill changes through the worker wire", async () => {
-  const workspace = await fixture.createFixtureDirectory("watch-worker");
-  await writeSkill({
-    dir: path.join(workspace, "skills/guide"),
-    name: "guide",
-    description: "Worker content",
-  });
+  const workspace = await mkdir("watch-worker");
+  const write = (description: string) =>
+    writeAt(path.join(workspace, "skills"), "guide", description);
+  await write("Worker content");
   const output = new PassThrough();
   const messages: unknown[] = [];
-  const ready = createDeferred();
-  const changed = createDeferred();
+  const received = { available: createDeferred(), change: createDeferred() };
   output.on("data", (chunk: Buffer) => {
     for (const line of chunk.toString().trim().split("\n")) {
       const message: unknown = JSON.parse(line);
       messages.push(message);
-      if (message === "available") {
-        ready.resolve();
-      } else if (message === "change") {
-        changed.resolve();
+      if (message === "available" || message === "change") {
+        received[message].resolve();
       }
     }
   });
   const { input, task, start } = watchWorker(workspace, output);
   start();
-  await ready.promise;
+  await received.available.promise;
   expect(messages).toContain("available");
-  await writeSkill({
-    dir: path.join(workspace, "skills/guide"),
-    name: "guide",
-    description: "Later worker edit",
-  });
+  await write("Later worker edit");
   await refresh.refreshSkillsDiscovery({ workspaceDir: workspace });
-  await changed.promise;
+  await received.change.promise;
   expect(messages).toContain("change");
   input.end();
   await task;
@@ -383,8 +342,7 @@ it("refreshes Gateway Workshop edits alongside the existing host subscription", 
     agents: { entries: { main: { agentDir: path.join(gateway, "agent") } } },
   };
   const workshop = resolveWorkshopSkillsDir(config, "main");
-  const write = (description: string) =>
-    writeSkill({ dir: path.join(workshop, "authored"), name: "authored", description });
+  const write = (description: string) => writeAt(workshop, "authored", description);
   await write("Original Workshop instructions");
   const request = { ...params, config, agentId: "main" };
   const first = await snapshot(request);
@@ -412,32 +370,27 @@ it("reacquires a closed transport and rejects late events after binding retireme
   await waitForSkillsTurn();
   await refresh.ensureSkillsWatcher(params);
   expect(access.watchSkills).toHaveBeenCalledTimes(2);
-  const version = getSkillsSnapshotVersion(gateway);
+  const version = versionOf(gateway);
   subscriptions[0]!.emit("change");
-  expect(getSkillsSnapshotVersion(gateway)).toBe(version);
+  expect(versionOf(gateway)).toBe(version);
   release();
   expect(subscriptions[1]!.signal.aborted).toBe(true);
   subscriptions[1]!.emit("change");
-  expect(getSkillsSnapshotVersion(gateway)).toBe(version);
+  expect(versionOf(gateway)).toBe(version);
   await refresh.closeSkillsWatchers();
   await expect(refresh.ensureSkillsWatcher(params)).rejects.toThrow("Workspace access is stopped");
 });
 
 it("joins accepted stdout writes after retiring skill discovery", async () => {
-  const workspace = await fixture.createFixtureDirectory("skills-watch-stdout");
+  const workspace = await mkdir("skills-watch-stdout");
   const written = createDeferred();
   const retired = createDeferred();
-  let blocked = true;
-  const callbacks: Array<(error?: Error | null) => void> = [];
+  const flushed = createDeferred();
   const output = new Writable({
     highWaterMark: 1,
     write(_chunk, _encoding, callback) {
       written.resolve();
-      if (blocked) {
-        callbacks.push(callback);
-      } else {
-        callback();
-      }
+      void flushed.promise.then(() => callback());
     },
   });
   const originalClose = refresh.closeSkillsWatchers;
@@ -447,30 +400,22 @@ it("joins accepted stdout writes after retiring skill discovery", async () => {
     return pending;
   });
   const { input, task: worker, start } = watchWorker(workspace, output);
-  let finished = false;
-  void worker.then(
-    () => {
-      finished = true;
-    },
-    () => {
-      finished = true;
-    },
-  );
   try {
     start();
     await written.promise;
     expect(output.writableNeedDrain).toBe(true);
     input.end();
     await retired.promise;
-    await waitForSkillsTurn();
-    expect(finished).toBe(false);
-    blocked = false;
-    callbacks.splice(0).forEach((callback) => callback());
+    await awaitGateBeforeSettlement(
+      waitForSkillsTurn(),
+      worker,
+      "Worker settled before stdout drained",
+    );
+    flushed.resolve();
     await worker;
     expect(output.writableLength).toBe(0);
   } finally {
-    blocked = false;
-    callbacks.splice(0).forEach((callback) => callback());
+    flushed.resolve();
     input.end();
     await worker;
     output.destroy();
@@ -479,15 +424,12 @@ it("joins accepted stdout writes after retiring skill discovery", async () => {
 
 it("keeps canonical Gateway roots local through discovery, refresh, and host changes", async () => {
   const { params, access, release } = await remoteFixture();
-  const canonical = await fixture.createFixtureDirectory("canonical-project");
+  const canonical = await mkdir("canonical-project");
   const projectRoot = path.join(canonical, "skills");
-  await writeSkill({
-    dir: path.join(projectRoot, "guide"),
-    name: "guide",
-    description: "Lower precedence project",
-  });
+  await writeAt(projectRoot, "guide", "Lower precedence project");
   const project = path.join(projectRoot, "project");
-  await writeSkill({ dir: project, name: "project", description: "Original project instructions" });
+  const write = (description: string) => writeAt(projectRoot, "project", description);
+  await write("Original project instructions");
   const canonicalParams = {
     ...params,
     executionWorkspaceDir: canonical,
@@ -502,12 +444,12 @@ it("keeps canonical Gateway roots local through discovery, refresh, and host cha
   expect(resolveSkillFileHost(projectSkill!)).toBe("gateway");
   expect(access.loadSkills.mock.lastCall?.[0].executionWorkspaceDir).toBeUndefined();
   expect(access.watchSkills.mock.lastCall?.[0].executionWorkspaceDir).toBeUndefined();
-  await writeSkill({ dir: project, name: "project", description: "Changed project instructions" });
+  await write("Changed project instructions");
   await refresh.refreshSkillsDiscovery({ workspaceDir: params.workspaceDir });
   saved = await snapshot({ ...canonicalParams, existingSnapshot: saved });
   expect(saved.prompt).toContain("Changed project instructions");
   // A remote explicit path with identical text is a different source identity.
-  const remote = await resolveReusableWorkspaceSkillSnapshot({
+  const remote = await resolveSnapshot({
     ...params,
     executionWorkspaceDir: canonical,
     existingSnapshot: saved,
@@ -516,7 +458,7 @@ it("keeps canonical Gateway roots local through discovery, refresh, and host cha
   expect(access.loadSkills.mock.lastCall?.[0].executionWorkspaceDir).toBe(canonical);
   expect(access.watchSkills.mock.lastCall?.[0].executionWorkspaceDir).toBe(canonical);
   release();
-  await expect(
-    resolveReusableWorkspaceSkillSnapshot({ ...canonicalParams, existingSnapshot: saved }),
-  ).rejects.toThrow("stopped or not ready");
+  await expect(resolveSnapshot({ ...canonicalParams, existingSnapshot: saved })).rejects.toThrow(
+    "stopped or not ready",
+  );
 });
