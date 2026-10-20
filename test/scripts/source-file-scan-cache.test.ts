@@ -1,4 +1,3 @@
-// Source File Scan Cache tests cover source file scan cache script behavior.
 import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -9,10 +8,21 @@ import { createDeferred } from "../helpers/promise.js";
 const tempDirs: string[] = [];
 let pendingScan: ReturnType<typeof collectSourceFileContents> | undefined;
 
-async function makeTempRepo() {
+async function sourceFixture(files: Record<string, string>) {
   const repoRoot = await mkdtemp(path.join(os.tmpdir(), "openclaw-source-scan-"));
   tempDirs.push(repoRoot);
-  return repoRoot;
+  await mkdir(path.join(repoRoot, "src"));
+  await Promise.all(
+    Object.entries(files).map(([name, content]) =>
+      writeFile(path.join(repoRoot, "src", name), content, "utf8"),
+    ),
+  );
+  return {
+    repoRoot,
+    scanRoots: ["src"],
+    scanExtensions: new Set([".ts"]),
+    ignoredDirNames: new Set<string>(),
+  };
 }
 
 describe("source file scan cache", () => {
@@ -24,20 +34,13 @@ describe("source file scan cache", () => {
   });
 
   it("bounds concurrent source file reads while preserving sorted output", async ({ signal }) => {
-    const repoRoot = await makeTempRepo();
-    const srcRoot = path.join(repoRoot, "src");
-    await mkdir(srcRoot, { recursive: true });
-    await Promise.all(
-      Array.from({ length: 9 }, async (_, index) => {
-        const file = path.join(srcRoot, `file-${index}.ts`);
-        await writeFile(file, `export const value${index} = ${index};\n`, "utf8");
-      }),
-    );
+    const names = Array.from({ length: 9 }, (_, index) => `file-${index}.ts`);
+    const fixture = await sourceFixture(Object.fromEntries(names.map((name) => [name, "source"])));
 
     let activeFiles = 0;
     let maxActiveFiles = 0;
-    const reads = Array.from({ length: 9 }, (_, index) => ({
-      name: `file-${index}.ts`,
+    const reads = names.map((name) => ({
+      name,
       started: createDeferred(),
       release: createDeferred(),
       completed: createDeferred(),
@@ -59,10 +62,7 @@ describe("source file scan cache", () => {
     signal.throwIfAborted();
     signal.addEventListener("abort", releaseReads, { once: true });
     const scan = (pendingScan = collectSourceFileContents({
-      repoRoot,
-      scanRoots: ["src"],
-      scanExtensions: new Set([".ts"]),
-      ignoredDirNames: new Set(),
+      ...fixture,
       maxConcurrentReads: 3,
       statFile: (filePath) => {
         activeFiles += 1;
@@ -86,12 +86,8 @@ describe("source file scan cache", () => {
       }
       const files = await scan;
       expect(maxActiveFiles).toBe(3);
-      expect(files.map((file) => file.relativeFile)).toEqual(
-        Array.from({ length: 9 }, (_, index) => `src/file-${index}.ts`),
-      );
-      expect(files.map((file) => file.content)).toEqual(
-        Array.from({ length: 9 }, (_, index) => `content:file-${index}.ts`),
-      );
+      expect(files.map((file) => file.relativeFile)).toEqual(names.map((name) => `src/${name}`));
+      expect(files.map((file) => file.content)).toEqual(names.map((name) => `content:${name}`));
     } finally {
       signal.removeEventListener("abort", releaseReads);
       releaseReads();
@@ -100,19 +96,12 @@ describe("source file scan cache", () => {
   });
 
   it("rejects oversized source files before reading them", async () => {
-    const repoRoot = await makeTempRepo();
-    const srcRoot = path.join(repoRoot, "src");
-    const oversizedPath = path.join(srcRoot, "oversized.ts");
-    await mkdir(srcRoot, { recursive: true });
-    await writeFile(oversizedPath, "x".repeat(32), "utf8");
+    const fixture = await sourceFixture({ "oversized.ts": "x".repeat(32) });
     let readCalls = 0;
 
     await expect(
       collectSourceFileContents({
-        repoRoot,
-        scanRoots: ["src"],
-        scanExtensions: new Set([".ts"]),
-        ignoredDirNames: new Set(),
+        ...fixture,
         maxFileBytes: 8,
         readFile: async () => {
           readCalls += 1;
@@ -124,17 +113,11 @@ describe("source file scan cache", () => {
   });
 
   it("rejects oversized source content returned after a bounded stat", async () => {
-    const repoRoot = await makeTempRepo();
-    const srcRoot = path.join(repoRoot, "src");
-    await mkdir(srcRoot, { recursive: true });
-    await writeFile(path.join(srcRoot, "generated.ts"), "small", "utf8");
+    const fixture = await sourceFixture({ "generated.ts": "small" });
 
     await expect(
       collectSourceFileContents({
-        repoRoot,
-        scanRoots: ["src"],
-        scanExtensions: new Set([".ts"]),
-        ignoredDirNames: new Set(),
+        ...fixture,
         maxFileBytes: 8,
         readFile: async () => "x".repeat(16),
       }),

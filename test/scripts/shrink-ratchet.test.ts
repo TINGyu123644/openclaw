@@ -17,6 +17,12 @@ import {
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+function gitRepo(prefix: string) {
+  const root = tempDirs.make(prefix);
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: root, stdio: "ignore" });
+  git("init");
+  return { root, git };
+}
 
 describe("shrink-ratchet", () => {
   it("requires an explicit base when the caller supplies prepared ancestry", () => {
@@ -26,16 +32,14 @@ describe("shrink-ratchet", () => {
       mergeBase: false,
     });
     expect(parseRatchetArgs(["--base", "HEAD"]).mergeBase).toBe(true);
-    const root = tempDirs.make("openclaw-ratchet-unavailable-");
-    execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
+    const { root } = gitRepo("openclaw-ratchet-unavailable-");
     expect(() =>
       resolveRatchetBase(root, { base: "missing", staged: false, mergeBase: false }),
     ).toThrow(/Could not resolve ratchet base ref/u);
   });
 
   it("rejects missing paths whose names resemble successful batch headers", () => {
-    const root = tempDirs.make("openclaw-shrink-ratchet-missing-");
-    execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
+    const { root } = gitRepo("openclaw-shrink-ratchet-missing-");
     expect(() => loadRatchetSources(root, ["src/missing.ts"])).toThrow(
       /Could not read staged source/u,
     );
@@ -68,20 +72,15 @@ describe("shrink-ratchet", () => {
   });
 
   it("loads worktree, index, and reference snapshots beyond the Git pipe limit", () => {
-    const root = tempDirs.make("openclaw-shrink-ratchet-git-");
+    const { root, git } = gitRepo("openclaw-shrink-ratchet-git-");
     const baselinePath = "baseline.txt";
     const absolutePath = path.join(root, baselinePath);
-    execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
     const padding = `#${"x".repeat(2 * 1024 * 1024)}\n`;
     fs.writeFileSync(absolutePath, padding + "1\n");
-    execFileSync("git", ["add", baselinePath], { cwd: root, stdio: "ignore" });
-    execFileSync(
-      "git",
-      ["-c", "user.name=OpenClaw", "-c", "user.email=test@openclaw.local", "commit", "-m", "base"],
-      { cwd: root, stdio: "ignore" },
-    );
+    git("add", baselinePath);
+    git("-c", "user.name=OpenClaw", "-c", "user.email=test@openclaw.local", "commit", "-m", "base");
     fs.writeFileSync(absolutePath, padding + "2\n");
-    execFileSync("git", ["add", baselinePath], { cwd: root, stdio: "ignore" });
+    git("add", baselinePath);
     fs.writeFileSync(absolutePath, padding + "3\n");
     const parse = (source: string) => parseRatchetScalar(source, baselinePath);
 
@@ -104,47 +103,34 @@ describe("shrink-ratchet", () => {
     );
   });
 
-  it.each([
-    {
-      compare: () =>
-        compareRatchetSets(
-          ["src/z.ts", "src/b.ts", "src/c.ts", "src/y.ts"],
-          new Set(["src/x.ts", "src/a.ts", "src/b.ts", "src/w.ts"]),
-        ),
-      expected: {
-        added: ["src/c.ts", "src/y.ts", "src/z.ts"],
-        removed: ["src/a.ts", "src/w.ts", "src/x.ts"],
-      },
-      name: "path sets",
-    },
-    {
-      compare: () =>
-        compareRatchetCounts(
-          new Map([
-            ["src/z.ts", 1],
-            ["src/b.ts", 1],
-            ["src/c.ts", 1],
-          ]),
-          new Map([
-            ["src/x.ts", 1],
-            ["src/a.ts", 1],
-            ["src/b.ts", 2],
-          ]),
-        ),
-      expected: {
-        decreased: [
-          { allowed: 1, current: 0, entry: "src/a.ts" },
-          { allowed: 2, current: 1, entry: "src/b.ts" },
-          { allowed: 1, current: 0, entry: "src/x.ts" },
-        ],
-        increased: [
-          { allowed: 0, current: 1, entry: "src/c.ts" },
-          { allowed: 0, current: 1, entry: "src/z.ts" },
-        ],
-      },
-      name: "per-entry counts",
-    },
-  ])("compares $name without permitting growth", ({ compare, expected }) => {
-    expect(compare()).toEqual(expected);
+  it("compares path sets without permitting growth", () => {
+    expect(
+      compareRatchetSets(
+        ["src/z.ts", "src/b.ts", "src/c.ts", "src/y.ts"],
+        new Set(["src/x.ts", "src/a.ts", "src/b.ts", "src/w.ts"]),
+      ),
+    ).toEqual({
+      added: ["src/c.ts", "src/y.ts", "src/z.ts"],
+      removed: ["src/a.ts", "src/w.ts", "src/x.ts"],
+    });
+  });
+
+  it("compares per-entry counts without permitting growth", () => {
+    expect(
+      compareRatchetCounts(
+        new Map(Object.entries({ "src/z.ts": 1, "src/b.ts": 1, "src/c.ts": 1 })),
+        new Map(Object.entries({ "src/x.ts": 1, "src/a.ts": 1, "src/b.ts": 2 })),
+      ),
+    ).toEqual({
+      decreased: [
+        { allowed: 1, current: 0, entry: "src/a.ts" },
+        { allowed: 2, current: 1, entry: "src/b.ts" },
+        { allowed: 1, current: 0, entry: "src/x.ts" },
+      ],
+      increased: [
+        { allowed: 0, current: 1, entry: "src/c.ts" },
+        { allowed: 0, current: 1, entry: "src/z.ts" },
+      ],
+    });
   });
 });

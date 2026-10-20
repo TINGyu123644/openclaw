@@ -44,7 +44,13 @@ function installedCheckout() {
       now: () => 0,
       resolveCacheState: () => ({ cacheable: false, fresh: false, reason: "no-cache" }),
     });
-  return { root, write, serving, ownerPath, env, runStep, run };
+  const before = fs.statSync(serving);
+  const expectPreserved = () => {
+    expect(fs.readFileSync(serving, "utf8")).toBe("previous serving generation\n");
+    expect(fs.statSync(serving)).toMatchObject({ ino: before.ino, mtimeMs: before.mtimeMs });
+  };
+  const removeScripts = () => fs.unlinkSync(path.join(root, "scripts"));
+  return { root, write, ownerPath, env, runStep, run, expectPreserved, removeScripts };
 }
 
 describe("published source updater candidate-build preflight", () => {
@@ -52,7 +58,6 @@ describe("published source updater candidate-build preflight", () => {
     "refuses %s before candidate work and preserves serving artifacts",
     async (hazard) => {
       const fixture = installedCheckout();
-      const before = fs.statSync(fixture.serving);
       const pid = hazard === "dead owner" ? 2147483647 : process.pid;
       const owner = JSON.stringify({ pid, startedAt: "2026-09-24T12:00:00.000Z" });
       let error: string;
@@ -65,7 +70,7 @@ describe("published source updater candidate-build preflight", () => {
         fs.symlinkSync(liveRoot, path.join(fixture.root, "dist-runtime"), "junction");
         error = "is a symbolic link";
       } else {
-        fs.unlinkSync(path.join(fixture.root, "scripts"));
+        fixture.removeScripts();
         fixture.write(
           "scripts/stage-bundled-plugin-runtime.mts",
           "export const prepareBundledPluginRuntime = false; export function stageBundledPluginRuntime() {}\n",
@@ -81,11 +86,7 @@ describe("published source updater candidate-build preflight", () => {
       } else {
         expect(fs.existsSync(fixture.ownerPath)).toBe(false);
       }
-      expect(fs.readFileSync(fixture.serving, "utf8")).toBe("previous serving generation\n");
-      expect(fs.statSync(fixture.serving)).toMatchObject({
-        ino: before.ino,
-        mtimeMs: before.mtimeMs,
-      });
+      fixture.expectPreserved();
     },
   );
 
@@ -99,9 +100,8 @@ describe("published source updater candidate-build preflight", () => {
     "preserves installed completion and consumes driver preparation: %j",
     async ({ version, prepared }) => {
       const fixture = installedCheckout();
-      const before = fs.statSync(fixture.serving);
       if (version !== "current") {
-        fs.unlinkSync(path.join(fixture.root, "scripts"));
+        fixture.removeScripts();
         if (version === "2026.9.4") {
           fixture.write(
             "scripts/stage-bundled-plugin-runtime.mts",
@@ -124,11 +124,7 @@ describe("published source updater candidate-build preflight", () => {
       } else {
         expect(fs.readFileSync(fixture.ownerPath, "utf8")).toBe(record);
       }
-      expect(fs.readFileSync(fixture.serving, "utf8")).toBe("previous serving generation\n");
-      expect(fs.statSync(fixture.serving)).toMatchObject({
-        ino: before.ino,
-        mtimeMs: before.mtimeMs,
-      });
+      fixture.expectPreserved();
       expect(
         fs.readdirSync(fixture.root).filter((name) => name.startsWith(".openclaw-runtime-")),
       ).toEqual([]);

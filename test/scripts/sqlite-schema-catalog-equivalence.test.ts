@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 import { buildMemoryStorageSchema } from "../../packages/memory-host-sdk/src/host/memory-schema-base.js";
 import { readSqliteSchemaCatalog as readNativeCatalog } from "../../scripts/lib/sqlite-schema-catalog.mts";
 import { listSqliteSchemaInputs } from "../../scripts/lib/sqlite-schema-inputs.mts";
@@ -23,33 +23,34 @@ import {
 
 const inputs = listSqliteSchemaInputs();
 const distinctInputs = [...new Map(inputs.map((input) => [input.sql, input])).values()];
+function createDatabase(allowExtension = false) {
+  const database = new DatabaseSync(":memory:", { allowExtension });
+  onTestFinished(() => database.close());
+  return database;
+}
 
 describe("generated SQLite schema catalogs", () => {
   it.each(distinctInputs)(
     "matches native catalog facts and admission for $id",
     async ({ sql, prepare }) => {
-      const database = new DatabaseSync(":memory:", { allowExtension: true });
-      try {
-        await prepare?.(database);
-        database.exec(sql);
-        const generated = readGeneratedSqliteCatalog(sql);
-        const fingerprint = readGeneratedSqliteFingerprint(sql);
-        expect(generated).toBeDefined();
-        expect(fingerprint).toBeDefined();
-        // Native per-object PRAGMAs are independent of the batched runtime reader.
-        const nativeCatalog = readNativeCatalog(database);
-        expect(generated).toEqual(nativeCatalog);
-        expect(
-          createSqliteTableContractReader(database).readCatalog(
-            nativeCatalog.views.map((view) => view.name),
-            nativeCatalog.tables.map((table) => table.name),
-          ),
-        ).toEqual(generated);
-        expect(fingerprintSqliteSchemaCatalog(nativeCatalog)).toBe(fingerprint?.fingerprint);
-        expect(collectSqliteSchemaIssues(database, sql)).toEqual([]);
-      } finally {
-        database.close();
-      }
+      const database = createDatabase(true);
+      await prepare?.(database);
+      database.exec(sql);
+      const generated = readGeneratedSqliteCatalog(sql);
+      const fingerprint = readGeneratedSqliteFingerprint(sql);
+      expect(generated).toBeDefined();
+      expect(fingerprint).toBeDefined();
+      // Native per-object PRAGMAs are independent of the batched runtime reader.
+      const nativeCatalog = readNativeCatalog(database);
+      expect(generated).toEqual(nativeCatalog);
+      expect(
+        createSqliteTableContractReader(database).readCatalog(
+          nativeCatalog.views.map((view) => view.name),
+          nativeCatalog.tables.map((table) => table.name),
+        ),
+      ).toEqual(generated);
+      expect(fingerprintSqliteSchemaCatalog(nativeCatalog)).toBe(fingerprint?.fingerprint);
+      expect(collectSqliteSchemaIssues(database, sql)).toEqual([]);
     },
   );
 
@@ -98,48 +99,40 @@ describe("generated SQLite schema catalogs", () => {
       strict: true,
       inlineRecallColumns: ["importance"],
     });
-    const database = new DatabaseSync(":memory:");
-    try {
-      database.exec(schemaSql.replace(from, to));
-      expect(collectSqliteSchemaIssues(database, schemaSql)).toContainEqual(
-        expect.objectContaining({ code }),
-      );
-    } finally {
-      database.close();
-    }
+    const database = createDatabase();
+    database.exec(schemaSql.replace(from, to));
+    expect(collectSqliteSchemaIssues(database, schemaSql)).toContainEqual(
+      expect.objectContaining({ code }),
+    );
   });
 
   it("keeps unrelated objects out of fragment fingerprints without hiding foreign uniqueness", () => {
     const sql = extractSqliteTableSchema(OPENCLAW_STATE_SCHEMA_SQL, "schema_meta");
     const fingerprint = readGeneratedSqliteFingerprint(sql);
     expect(fingerprint).toBeDefined();
-    const database = new DatabaseSync(":memory:");
-    try {
-      database.exec(sql);
-      database.exec(`
+    const database = createDatabase();
+    database.exec(sql);
+    database.exec(`
         CREATE TABLE unrelated (id INTEGER PRIMARY KEY);
         CREATE VIEW unrelated_view AS SELECT id FROM unrelated;
         CREATE INDEX unrelated_lookup ON unrelated(id);
         CREATE INDEX metadata_lookup ON schema_meta(role);
       `);
-      expect(fingerprintSqliteSchemaCatalog(readNativeCatalog(database), fingerprint)).toBe(
-        fingerprint?.fingerprint,
-      );
-      expect(collectSqliteSchemaIssues(database, sql)).toEqual([]);
+    expect(fingerprintSqliteSchemaCatalog(readNativeCatalog(database), fingerprint)).toBe(
+      fingerprint?.fingerprint,
+    );
+    expect(collectSqliteSchemaIssues(database, sql)).toEqual([]);
 
-      database.exec("CREATE UNIQUE INDEX foreign_uniqueness ON schema_meta(role)");
-      expect(fingerprintSqliteSchemaCatalog(readNativeCatalog(database), fingerprint)).not.toBe(
-        fingerprint?.fingerprint,
-      );
-      expect(collectSqliteSchemaIssues(database, sql)).toContainEqual(
-        expect.objectContaining({
-          code: "unexpected-unique-index",
-          objectName: "foreign_uniqueness",
-        }),
-      );
-    } finally {
-      database.close();
-    }
+    database.exec("CREATE UNIQUE INDEX foreign_uniqueness ON schema_meta(role)");
+    expect(fingerprintSqliteSchemaCatalog(readNativeCatalog(database), fingerprint)).not.toBe(
+      fingerprint?.fingerprint,
+    );
+    expect(collectSqliteSchemaIssues(database, sql)).toContainEqual(
+      expect.objectContaining({
+        code: "unexpected-unique-index",
+        objectName: "foreign_uniqueness",
+      }),
+    );
   });
 
   it.each([
@@ -172,19 +165,15 @@ describe("generated SQLite schema catalogs", () => {
       objectName: "session_entry_snapshots_after_insert",
     },
   ])("rejects $name drift through generated admission", ({ from, to, code, objectName }) => {
-    const database = new DatabaseSync(":memory:");
-    try {
-      const driftedSql = OPENCLAW_AGENT_SCHEMA_SQL.replace(from, to);
-      expect(driftedSql).not.toBe(OPENCLAW_AGENT_SCHEMA_SQL);
-      database.exec(driftedSql);
-      expect(fingerprintSqliteSchemaCatalog(readNativeCatalog(database))).not.toBe(
-        readGeneratedSqliteFingerprint(OPENCLAW_AGENT_SCHEMA_SQL)?.fingerprint,
-      );
-      expect(collectSqliteSchemaIssues(database, OPENCLAW_AGENT_SCHEMA_SQL)).toContainEqual(
-        expect.objectContaining({ code, objectName }),
-      );
-    } finally {
-      database.close();
-    }
+    const database = createDatabase();
+    const driftedSql = OPENCLAW_AGENT_SCHEMA_SQL.replace(from, to);
+    expect(driftedSql).not.toBe(OPENCLAW_AGENT_SCHEMA_SQL);
+    database.exec(driftedSql);
+    expect(fingerprintSqliteSchemaCatalog(readNativeCatalog(database))).not.toBe(
+      readGeneratedSqliteFingerprint(OPENCLAW_AGENT_SCHEMA_SQL)?.fingerprint,
+    );
+    expect(collectSqliteSchemaIssues(database, OPENCLAW_AGENT_SCHEMA_SQL)).toContainEqual(
+      expect.objectContaining({ code, objectName }),
+    );
   });
 });
