@@ -42,7 +42,6 @@ it.each<
           onReserved: () => {},
         }),
       ).resolves.toMatchObject({ ok: true, ran: true });
-      // Read through the persisted service boundary, including the worker request serialization.
       const stored = await f.cron.readJob(job.id);
       expect(stored?.state.nextRunAtMs).toBeUndefined();
       expect(stored).toMatchObject({

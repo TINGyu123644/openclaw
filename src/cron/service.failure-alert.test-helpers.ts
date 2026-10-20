@@ -1,25 +1,21 @@
-import { expect, vi } from "vitest";
+import { expect, type Mock, vi } from "vitest";
 import { cronTestDeps, cronTestInput } from "./service.fixture-builders.test-support.js";
 import { CronService } from "./service.js";
 import { setupCronServiceSuite } from "./service.test-harness.js";
+import type { CronServiceDeps as Deps } from "./service/state.js";
 import type { CronJobCreate } from "./types.js";
 
-type CronServiceParams = ConstructorParameters<typeof CronService>[0];
-type RunIsolatedAgentJob = NonNullable<CronServiceParams["runIsolatedAgentJob"]>;
-type IsolatedAgentRunResult = Awaited<ReturnType<RunIsolatedAgentJob>>;
-type FailureAlertConfig = NonNullable<CronServiceParams["cronConfig"]>["failureAlert"];
-type SendCronFailureAlert = NonNullable<CronServiceParams["sendCronFailureAlert"]>;
-type RunCronFailureRepair = NonNullable<CronServiceParams["runCronFailureRepair"]>;
-type RunScriptJob = NonNullable<CronServiceParams["runScriptJob"]>;
+type JobRunner = NonNullable<Deps["runIsolatedAgentJob"]>;
+type AlertMock = Mock<NonNullable<Deps["sendCronFailureAlert"]>>;
 
 export function createTelegramDelivery(): NonNullable<CronJobCreate["delivery"]> {
   return { mode: "announce", channel: "telegram", to: "19098680" };
 }
 
 type FailureAlertParams = {
-  scheduler: CronServiceParams["scheduler"];
-  failureAlert?: FailureAlertConfig;
-  runResult?: IsolatedAgentRunResult;
+  scheduler: Deps["scheduler"];
+  failureAlert?: NonNullable<Deps["cronConfig"]>["failureAlert"];
+  runResult?: Awaited<ReturnType<JobRunner>>;
   useFallback?: boolean;
 };
 
@@ -30,26 +26,25 @@ export function setupFailureAlertSuite() {
   });
 
   async function createFixture(params: FailureAlertParams) {
-    const store = await makeStorePath();
+    const { storePath } = await makeStorePath();
     const runResult = params.runResult ?? {
       status: "error",
       error: "temporary upstream error",
     };
     const mocks = {
-      sendCronFailureAlert: vi.fn<SendCronFailureAlert>(async () => undefined),
+      sendCronFailureAlert: vi.fn<NonNullable<Deps["sendCronFailureAlert"]>>(async () => undefined),
       enqueueSystemEvent: vi.fn(),
       requestHeartbeat: vi.fn(),
-      runCronFailureRepair: vi.fn<RunCronFailureRepair>(async () => undefined),
-      runIsolatedAgentJob: vi.fn<RunIsolatedAgentJob>(async () => runResult),
-      runScriptJob: vi.fn<RunScriptJob>(async () => runResult),
+      runCronFailureRepair: vi.fn<NonNullable<Deps["runCronFailureRepair"]>>(async () => undefined),
+      runIsolatedAgentJob: vi.fn<JobRunner>(async () => runResult),
+      runScriptJob: vi.fn<NonNullable<Deps["runScriptJob"]>>(async () => runResult),
     };
     const { sendCronFailureAlert, ...deps } = mocks;
     const cron = new CronService({
-      ...cronTestDeps({ storePath: store.storePath }),
+      ...cronTestDeps({ storePath }),
       scheduler: params.scheduler,
-      ...(params.failureAlert === undefined
-        ? {}
-        : { cronConfig: { failureAlert: params.failureAlert } }),
+      cronConfig:
+        params.failureAlert === undefined ? undefined : { failureAlert: params.failureAlert },
       log: noopLogger,
       ...deps,
       ...(params.useFallback ? {} : { sendCronFailureAlert }),
@@ -83,32 +78,20 @@ export function setupFailureAlertSuite() {
   return { withFailureAlertCron };
 }
 
-export function alertCallArg(
-  sendCronFailureAlert: ReturnType<typeof vi.fn<SendCronFailureAlert>>,
-  callIndex = sendCronFailureAlert.mock.calls.length - 1,
-) {
-  const alert = sendCronFailureAlert.mock.calls[callIndex]?.[0];
+export function alertCallArg(sendAlert: AlertMock) {
+  const alert = sendAlert.mock.calls.at(-1)?.[0];
   if (!alert) {
-    throw new Error(`expected failure alert call ${callIndex}`);
+    throw new Error("expected failure alert call");
   }
   return { ...alert, ...alert.payload };
 }
 
-export function expectAlertFields(
-  sendCronFailureAlert: ReturnType<typeof vi.fn<SendCronFailureAlert>>,
-  expected: Record<string, unknown>,
-  callIndex?: number,
-) {
-  const alert = alertCallArg(sendCronFailureAlert, callIndex);
+export function expectAlertFields(sendAlert: AlertMock, expected: Record<string, unknown>) {
+  const alert = alertCallArg(sendAlert);
   expect(alert).toEqual(expect.objectContaining(expected));
   return alert;
 }
 
-export function expectAlertTextContaining(
-  sendCronFailureAlert: ReturnType<typeof vi.fn<SendCronFailureAlert>>,
-  text: string,
-  callIndex?: number,
-): void {
-  const alert = alertCallArg(sendCronFailureAlert, callIndex);
-  expect(alert.text).toEqual(expect.stringContaining(text));
+export function expectAlertTextContaining(sendAlert: AlertMock, text: string): void {
+  expect(alertCallArg(sendAlert).text).toEqual(expect.stringContaining(text));
 }

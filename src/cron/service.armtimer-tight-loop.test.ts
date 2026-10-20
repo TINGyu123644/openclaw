@@ -19,19 +19,6 @@ import { saveCronStore } from "./store.js";
 const { makeStorePath } = createCronStoreHarness({ prefix: "openclaw-cron-tight-loop-" });
 const now = Date.parse("2026-02-28T12:32:00.000Z");
 
-function job(nextRunAtMs?: number) {
-  return cronTestJob({
-    id: "monitor",
-    deleteAfterRun: false,
-    createdAtMs: now - 60_000,
-    updatedAtMs: now - 60_000,
-    schedule: { kind: "cron", expr: "*/15 * * * *" },
-    payload: { kind: "agentTurn", message: "monitor" },
-    delivery: { mode: "none" },
-    state: { nextRunAtMs },
-  });
-}
-
 describe("cron scheduled wakes", () => {
   const states: CronServiceState[] = [];
 
@@ -42,9 +29,7 @@ describe("cron scheduled wakes", () => {
     states.length = 0;
   });
 
-  it("joins a scheduled tick waiting for admission without reopening suspension", async ({
-    signal,
-  }) => {
+  it("joins admission-blocked ticks without reopening suspension", async ({ signal }) => {
     const store = await makeStorePath();
     const clock = createGatewaySchedulerClock(now);
     const state = createCronServiceState({
@@ -53,7 +38,12 @@ describe("cron scheduled wakes", () => {
       scheduler: createTestGatewayScheduler(clock.clock),
     });
     states.push(state);
-    state.store = { version: 1, jobs: [job(now + 1_000)] };
+    const job = cronTestJob({
+      id: "monitor",
+      schedule: { kind: "cron", expr: "*/15 * * * *" },
+      state: { nextRunAtMs: now + 1_000 },
+    });
+    state.store = { version: 1, jobs: [job] };
     await saveCronStore(store.storePath, state.store);
     const { wake: wakeScheduler } = await captureCronSchedulerWakeForTest(() =>
       startCronScheduler(state, new Set()),
