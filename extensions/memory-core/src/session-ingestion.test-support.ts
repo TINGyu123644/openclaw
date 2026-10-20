@@ -46,34 +46,29 @@ export async function seedCanonicalTranscript(
   const sessionsDir = resolveSessionTranscriptsDirForAgent(agentId);
   const storePath = path.join(sessionsDir, "sessions.json");
   const sessionKey = `agent:${agentId}:session-backfill:${sessionId}`;
-  const updatedAt = Math.max(
-    Date.now(),
-    ...messages.map((message) => Date.parse(message.timestamp)),
-  );
+  const entry = {
+    ...metadata,
+    sessionId,
+    updatedAt: Math.max(Date.now(), ...messages.map((message) => Date.parse(message.timestamp))),
+  };
   await fs.mkdir(sessionsDir, { recursive: true });
-  const entry = { ...metadata, sessionId, updatedAt };
-  await upsertSessionEntry({ agentId, sessionKey, storePath, entry });
+  const session = { agentId, sessionKey, storePath };
+  await upsertSessionEntry({ ...session, entry });
   for (const message of messages) {
     await appendSessionTranscriptMessageByIdentity({
-      agentId,
+      ...session,
       sessionId,
-      sessionKey,
-      storePath,
       message: transcriptMessage(message),
     });
   }
-  await upsertSessionEntry({ agentId, sessionKey, storePath, entry });
+  await upsertSessionEntry({ ...session, entry });
 }
 
 export function hashStagedContent(
   entries: Awaited<ReturnType<typeof readShortTermRecallEntries>>,
 ): string {
   const content = entries
-    .map((entry) => ({
-      claimHash: entry.claimHash,
-      provenance: entry.provenance,
-      snippet: entry.snippet,
-    }))
+    .map(({ claimHash, provenance, snippet }) => ({ claimHash, provenance, snippet }))
     .toSorted((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
   return createHash("sha256").update(JSON.stringify(content)).digest("hex");
 }

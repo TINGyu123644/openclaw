@@ -40,23 +40,18 @@ const memoryRuntime = createMemoryRuntime({
 const params = { cfg: {}, agentId: "main" };
 
 describe("memoryRuntime", () => {
-  it("preserves manager debug metadata", async () => {
-    const result = await memoryRuntime.getMemorySearchManager(params);
-    expect(result.debug).toEqual(managerDebug);
-    expect(getMemorySearchManagerMock).toHaveBeenCalledWith({
-      ...params,
-      runInBackgroundContext: runInMemoryTestBackgroundContext,
-    });
-  });
-
-  it("forwards optional diagnostic source inspection", async () => {
-    const diagnostic = { ...params, purpose: "status" as const, inspectSources: true };
-    await memoryRuntime.getMemorySearchManager(diagnostic);
-    expect(getMemorySearchManagerMock).toHaveBeenCalledWith({
-      ...diagnostic,
-      runInBackgroundContext: runInMemoryTestBackgroundContext,
-    });
-  });
+  it.each([{}, { purpose: "status" as const, inspectSources: true }])(
+    "preserves manager metadata and forwards acquisition options: %j",
+    async (options) => {
+      const request = { ...params, ...options };
+      const result = await memoryRuntime.getMemorySearchManager(request);
+      expect(result.debug).toEqual(managerDebug);
+      expect(getMemorySearchManagerMock).toHaveBeenCalledWith({
+        ...request,
+        runInBackgroundContext: runInMemoryTestBackgroundContext,
+      });
+    },
+  );
 
   it("keeps local-service acquisition scoped to each runtime instance", async () => {
     const requests = ["first", "second"].map((agentId) => ({

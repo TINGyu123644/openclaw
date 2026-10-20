@@ -1,11 +1,11 @@
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { appendMemoryHostEvent } from "openclaw/plugin-sdk/memory-host-events";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../api.js";
 import plugin from "../index.js";
 
@@ -17,16 +17,10 @@ if (!publicArtifacts) {
 }
 
 describe("memory-core public artifacts", () => {
+  const tempDirs = useAutoCleanupTempDirTracker(afterAll);
   let fixtureRoot = "";
-
-  beforeAll(async () => {
-    fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "memory-core-public-artifacts-"));
-  });
-
-  afterAll(async () => {
-    if (fixtureRoot) {
-      await fs.rm(fixtureRoot, { recursive: true, force: true });
-    }
+  beforeAll(() => {
+    fixtureRoot = tempDirs.make("memory-core-public-artifacts-");
   });
 
   const config = (workspace: string): OpenClawConfig => ({

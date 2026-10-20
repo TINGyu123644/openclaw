@@ -141,19 +141,10 @@ export function memoryIndexFixture(
         endLine = 1,
         embedding = new Uint8Array(),
       } = options;
-      db.prepare(`INSERT INTO memory_index_chunks
+      const insert = db.prepare(`INSERT INTO memory_index_chunks
         (id, path, source, start_line, end_line, hash, model, text, embedding, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`).run(
-        id,
-        filePath,
-        source,
-        1,
-        endLine,
-        hash,
-        model,
-        text,
-        embedding,
-      );
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`);
+      insert.run(id, filePath, source, 1, endLine, hash, model, text, embedding);
     },
     source(filePath: string, source: string, hash: string) {
       db.prepare(

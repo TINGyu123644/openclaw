@@ -2,96 +2,87 @@ import { setImmediate as nextTurn } from "node:timers/promises";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { describe, expect, it } from "vitest";
 import {
-  withMemoryWorkspaceLock,
-  withMemoryWorkspacePreparation,
+  withMemoryWorkspaceLock as write,
+  withMemoryWorkspacePreparation as prepare,
 } from "./memory-workspace-lock.js";
 
-async function expectBlocked(
-  order: string[],
-  expected: string[],
-  release: ReturnType<typeof createDeferred<void>>,
-  pending: Promise<unknown>[],
-) {
-  try {
-    await nextTurn();
-    expect(order).toEqual(expected);
-  } finally {
-    release.resolve();
-    await Promise.all(pending);
-  }
+let caseId = 0;
+function setup() {
+  const order: string[] = [];
+  const entered = createDeferred<void>();
+  const release = createDeferred<void>();
+  return {
+    workspace: `/memory-workspace-test/case-${caseId++}`,
+    order,
+    entered,
+    release,
+    step: (name: string) => async () => {
+      order.push(name);
+    },
+    hold: (name: string, after?: () => Promise<void>) => async () => {
+      order.push(name);
+      entered.resolve();
+      await release.promise;
+      if (after) {
+        await after();
+      }
+    },
+    async expectBlocked(expected: string[], ...pending: Promise<unknown>[]) {
+      try {
+        await nextTurn();
+        expect(order).toEqual(expected);
+      } finally {
+        release.resolve();
+        await Promise.all(pending);
+      }
+    },
+  };
 }
 
 describe("memory workspace ordering", () => {
-  let caseId = 0;
-  function setup() {
-    const order: string[] = [];
-    return {
-      workspace: `/memory-workspace-test/case-${caseId++}`,
-      entered: createDeferred<void>(),
-      release: createDeferred<void>(),
-      order,
-    };
-  }
-
   it("keeps preparations and writers in the same local FIFO", async () => {
-    const { workspace, entered, release, order } = setup();
-    const first = withMemoryWorkspacePreparation(workspace, async () => {
-      order.push("first preparation");
-      entered.resolve();
-      await release.promise;
-    });
-    await entered.promise;
-    const writer = withMemoryWorkspaceLock(workspace, async () => {
-      order.push("writer");
-    });
-    const last = withMemoryWorkspacePreparation(workspace, async () => {
-      order.push("last preparation");
-    });
-    await expectBlocked(order, ["first preparation"], release, [first, writer, last]);
-    expect(order).toEqual(["first preparation", "writer", "last preparation"]);
+    const f = setup();
+    const first = prepare(f.workspace, f.hold("first preparation"));
+    await f.entered.promise;
+    const writer = write(f.workspace, f.step("writer"));
+    const last = prepare(f.workspace, f.step("last preparation"));
+    await f.expectBlocked(["first preparation"], first, writer, last);
+    expect(f.order).toEqual(["first preparation", "writer", "last preparation"]);
   });
 
   it("reenters a live write scope and serializes sibling preparations", async () => {
-    const { workspace, entered, release, order } = setup();
-    await withMemoryWorkspaceLock(workspace, async () => {
-      const first = withMemoryWorkspacePreparation(workspace, async () => {
-        order.push("first");
-        entered.resolve();
-        await release.promise;
-        await withMemoryWorkspacePreparation(workspace, async () => {
-          order.push("nested");
-        });
-      });
-      const second = withMemoryWorkspacePreparation(workspace, async () => {
-        order.push("second");
-      });
-      await entered.promise;
-      await expectBlocked(order, ["first"], release, [first, second]);
+    const f = setup();
+    await write(f.workspace, async () => {
+      const first = prepare(
+        f.workspace,
+        f.hold("first", () => prepare(f.workspace, f.step("nested"))),
+      );
+      const second = prepare(f.workspace, f.step("second"));
+      await f.entered.promise;
+      await f.expectBlocked(["first"], first, second);
     });
-    expect(order).toEqual(["first", "nested", "second"]);
+    expect(f.order).toEqual(["first", "nested", "second"]);
   });
 
   it("queues preparation resumed from an expired write scope behind the current writer", async () => {
-    const { workspace, entered, release, order } = setup();
+    const f = setup();
     const resume = createDeferred<void>();
     const attempted = createDeferred<void>();
-    const retained = await withMemoryWorkspaceLock(workspace, async () => ({
+    const retained = await write(f.workspace, async () => ({
       task: resume.promise.then(async () => {
         attempted.resolve();
-        await withMemoryWorkspacePreparation(workspace, async () => {
-          order.push("preparation");
-        });
+        await prepare(f.workspace, f.step("preparation"));
       }),
     }));
-    const writer = withMemoryWorkspaceLock(workspace, async () => {
-      entered.resolve();
-      await release.promise;
-      order.push("writer");
+    const writer = write(f.workspace, async () => {
+      f.entered.resolve();
+      await f.release.promise;
+      f.order.push("writer");
     });
-    await entered.promise;
+    await f.entered.promise;
     resume.resolve();
     await attempted.promise;
-    await expectBlocked(order, [], release, [writer, retained.task]);
-    expect(order).toEqual(["writer", "preparation"]);
+    await f.expectBlocked([], writer, retained.task);
+    expect(f.order).toEqual(["writer", "preparation"]);
   });
 });

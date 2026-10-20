@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { DatabaseSync, StatementSync } from "node:sqlite";
-import { mock } from "node:test";
 import { parentPort } from "node:worker_threads";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 
@@ -18,35 +17,26 @@ const observeRow = (row: Record<string, unknown>) => {
     }
   }
 };
-const all = mock.method(StatementSync.prototype, "all");
-const iterate = mock.method(StatementSync.prototype, "iterate");
+const { all, iterate } = StatementSync.prototype;
 StatementSync.prototype.all = function (this: StatementSync, ...args) {
-  try {
-    const rows = Reflect.apply(all, this, args);
-    if (active && matches(this.sourceSQL)) {
-      rows.forEach(observeRow);
-    }
-    return rows;
-  } finally {
-    all.mock.resetCalls();
+  const rows = Reflect.apply(all, this, args);
+  if (active && matches(this.sourceSQL)) {
+    rows.forEach(observeRow);
   }
+  return rows;
 };
 StatementSync.prototype.iterate = function (this: StatementSync, ...args) {
-  try {
-    const rows = Reflect.apply(iterate, this, args);
-    if (!active || !matches(this.sourceSQL)) {
-      return rows;
-    }
-    return (function* () {
-      for (const row of rows) {
-        observeRow(row);
-        yield row;
-      }
-      return undefined;
-    })();
-  } finally {
-    iterate.mock.resetCalls();
+  const rows = Reflect.apply(iterate, this, args);
+  if (!active || !matches(this.sourceSQL)) {
+    return rows;
   }
+  return (function* () {
+    for (const row of rows) {
+      observeRow(row);
+      yield row;
+    }
+    return undefined;
+  })();
 };
 
 function calibrate(counters: Int32Array) {
