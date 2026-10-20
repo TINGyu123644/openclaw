@@ -50,6 +50,12 @@ function trackedRoot(exited = false, pid = ROOT): ChildProcess {
 }
 
 type ProcessRow = { pid: number; ppid: number; pgid: number; state: string };
+const processRow = (pid = 401, state = "Z", ppid = process.pid, pgid = ROOT): ProcessRow => ({
+  pid,
+  state,
+  ppid,
+  pgid,
+});
 let processRows: ProcessRow[] = [];
 let initialSigchldListeners: ReturnType<typeof process.listeners>;
 
@@ -79,6 +85,17 @@ function setProcesses(rows: ProcessRow[]) {
     }
     return stat;
   });
+}
+
+async function reapAfter(delay = 25) {
+  scheduleAdoptedChildZombieReapAfterExit(trackedRoot(true), true);
+  await vi.advanceTimersByTimeAsync(delay);
+}
+
+function expectNoNativeReaping() {
+  for (const mock of [proc.supported, proc.inspect, proc.wait]) {
+    expect(mock).not.toHaveBeenCalled();
+  }
 }
 
 beforeEach(() => {
@@ -113,12 +130,9 @@ afterEach(async () => {
 describe("adopted process-group cleanup", () => {
   it("bounds discovery for 50 retained groups and coalesces exit notifications", async () => {
     setProcesses(
-      Array.from({ length: 50 }, (_, index) => ({
-        pid: 1_001 + index * 2,
-        ppid: process.pid,
-        pgid: 1_000 + index * 2,
-        state: "S",
-      })),
+      Array.from({ length: 50 }, (_, index) =>
+        processRow(1_001 + index * 2, "S", process.pid, 1_000 + index * 2),
+      ),
     );
     for (const row of processRows) {
       scheduleAdoptedChildZombieReapAfterExit(trackedRoot(true, row.pgid), true);
@@ -142,29 +156,27 @@ describe("adopted process-group cleanup", () => {
   });
 
   it("retains groups across a failed enumeration until adoption is visible", async () => {
-    setProcesses([{ pid: 401, ppid: 900, pgid: ROOT, state: "Z" }]);
+    setProcesses([processRow(401, "Z", 900)]);
     proc.entries.mockImplementationOnce(() => {
       throw new Error("proc unavailable");
     });
-    scheduleAdoptedChildZombieReapAfterExit(trackedRoot(true), true);
-    await vi.advanceTimersByTimeAsync(2_000);
+    await reapAfter(2_000);
     expect(proc.wait).not.toHaveBeenCalled();
-    setProcesses([{ pid: 401, ppid: process.pid, pgid: ROOT, state: "Z" }]);
+    setProcesses([processRow()]);
     await vi.advanceTimersByTimeAsync(1_000);
     expect(proc.wait.mock.calls).toEqual([[401]]);
   });
 
   it("retains an exit wakeup while child discovery is still in flight", async () => {
-    setProcesses([{ pid: 401, ppid: 900, pgid: ROOT, state: "Z" }]);
+    setProcesses([processRow(401, "Z", 900)]);
     const discovery = Promise.withResolvers<string>();
     proc.entries.mockReturnValue(["900"]);
     proc.stat.mockReturnValueOnce(discovery.promise);
-    scheduleAdoptedChildZombieReapAfterExit(trackedRoot(true), true);
-    await vi.advanceTimersByTimeAsync(25);
+    await reapAfter();
 
     process.emit("SIGCHLD");
     await vi.advanceTimersByTimeAsync(25);
-    setProcesses([{ pid: 401, ppid: process.pid, pgid: ROOT, state: "Z" }]);
+    setProcesses([processRow()]);
     discovery.resolve("");
     await vi.advanceTimersByTimeAsync(25);
     expect(proc.wait.mock.calls).toEqual([[401]]);
@@ -177,17 +189,11 @@ describe("adopted process-group cleanup", () => {
         scenario === "absent"
           ? []
           : scenario === "tracked-root"
-            ? [{ pid: ROOT, ppid: process.pid, pgid: ROOT, state: "Z" }]
-            : [
-                { pid: 401, ppid: process.pid, pgid: 700, state: "Z" },
-                { pid: 402, ppid: 900, pgid: ROOT, state: "Z" },
-              ],
+            ? [processRow(ROOT)]
+            : [processRow(401, "Z", process.pid, 700), processRow(402, "Z", 900)],
       );
-      scheduleAdoptedChildZombieReapAfterExit(trackedRoot(true), true);
-      await vi.advanceTimersByTimeAsync(1_050);
-      expect(proc.supported).not.toHaveBeenCalled();
-      expect(proc.inspect).not.toHaveBeenCalled();
-      expect(proc.wait).not.toHaveBeenCalled();
+      await reapAfter(1_050);
+      expectNoNativeReaping();
       if (scenario !== "unrelated") {
         expect(vi.getTimerCount()).toBe(0);
       }
@@ -195,10 +201,9 @@ describe("adopted process-group cleanup", () => {
   );
 
   it("stops cleanup when an adopted zombie needs unavailable native support", async () => {
-    setProcesses([{ pid: 401, ppid: process.pid, pgid: ROOT, state: "Z" }]);
+    setProcesses([processRow()]);
     proc.supported.mockReturnValue(false);
-    scheduleAdoptedChildZombieReapAfterExit(trackedRoot(true), true);
-    await vi.advanceTimersByTimeAsync(25);
+    await reapAfter();
     expect(proc.supported).toHaveBeenCalledTimes(1);
     expect(proc.inspect).not.toHaveBeenCalled();
     expect(proc.wait).not.toHaveBeenCalled();
@@ -208,7 +213,7 @@ describe("adopted process-group cleanup", () => {
   it.each(["supported", "inspect", "wait"] as const)(
     "retries a transient native %s failure within the existing cleanup budget",
     async (operation) => {
-      setProcesses([{ pid: 401, ppid: process.pid, pgid: ROOT, state: "Z" }]);
+      setProcesses([processRow()]);
       proc[operation].mockImplementationOnce(() => {
         throw new Error("native cleanup failed");
       });
@@ -228,10 +233,9 @@ describe("adopted process-group cleanup", () => {
   );
 
   it("does not reap until the fresh native observation confirms an exited child", async () => {
-    setProcesses([{ pid: 401, ppid: process.pid, pgid: ROOT, state: "Z" }]);
+    setProcesses([processRow()]);
     proc.inspect.mockReturnValueOnce({ kind: "running" });
-    scheduleAdoptedChildZombieReapAfterExit(trackedRoot(true), true);
-    await vi.advanceTimersByTimeAsync(25);
+    await reapAfter();
     expect(proc.wait).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1_000);
     expect(proc.wait.mock.calls).toEqual([[401]]);
@@ -239,7 +243,7 @@ describe("adopted process-group cleanup", () => {
   it("settles a cooperative descendant throughout a longer command grace period", async () => {
     const child = trackedRoot(true);
     proc.alive.mockReturnValue(true);
-    setProcesses([{ pid: 401, ppid: process.pid, pgid: ROOT, state: "S" }]);
+    setProcesses([processRow(401, "S")]);
     proc.wait.mockImplementation((pid) => {
       proc.alive.mockReturnValue(false);
       setProcesses([]);
@@ -255,7 +259,7 @@ describe("adopted process-group cleanup", () => {
     });
     termination.terminate();
     await vi.advanceTimersByTimeAsync(31_000);
-    setProcesses([{ pid: 401, ppid: process.pid, pgid: ROOT, state: "Z" }]);
+    setProcesses([processRow()]);
     await vi.advanceTimersByTimeAsync(15_000);
     await expect(termination.settle()).resolves.toBe("cooperative");
     expect(proc.wait.mock.calls).toEqual([[401]]);
@@ -264,17 +268,15 @@ describe("adopted process-group cleanup", () => {
   it("waits for tracked-root exit and leaves tracked, live, and unrelated children intact", async () => {
     const child = trackedRoot();
     setProcesses([
-      { pid: ROOT, ppid: process.pid, pgid: ROOT, state: "Z" },
-      { pid: 401, ppid: process.pid, pgid: ROOT, state: "Z" },
-      { pid: 402, ppid: process.pid, pgid: ROOT, state: "S" },
-      { pid: 403, ppid: process.pid, pgid: 700, state: "Z" },
-      { pid: 404, ppid: 900, pgid: ROOT, state: "Z" },
+      processRow(ROOT),
+      processRow(),
+      processRow(402, "S"),
+      processRow(403, "Z", process.pid, 700),
+      processRow(404, "Z", 900),
     ]);
     scheduleAdoptedChildZombieReapAfterExit(child, true);
     await vi.advanceTimersByTimeAsync(100);
-    expect(proc.wait).not.toHaveBeenCalled();
-    expect(proc.inspect).not.toHaveBeenCalled();
-    expect(proc.supported).not.toHaveBeenCalled();
+    expectNoNativeReaping();
     expect(proc.entries).not.toHaveBeenCalled();
 
     child.emit("exit", null, "SIGTERM");
@@ -286,21 +288,11 @@ describe("adopted process-group cleanup", () => {
   });
 
   it("retains cleanup until a live intermediate releases its zombie", async () => {
-    const child = trackedRoot(true);
-    setProcesses([
-      { pid: 401, ppid: process.pid, pgid: ROOT, state: "S" },
-      { pid: 402, ppid: 401, pgid: ROOT, state: "Z" },
-    ]);
-    scheduleAdoptedChildZombieReapAfterExit(child, true);
-    await vi.advanceTimersByTimeAsync(500);
-    expect(proc.supported).not.toHaveBeenCalled();
-    expect(proc.inspect).not.toHaveBeenCalled();
-    expect(proc.wait).not.toHaveBeenCalled();
+    setProcesses([processRow(401, "S"), processRow(402, "Z", 401)]);
+    await reapAfter(500);
+    expectNoNativeReaping();
 
-    setProcesses([
-      { pid: 401, ppid: process.pid, pgid: ROOT, state: "Z" },
-      { pid: 402, ppid: process.pid, pgid: ROOT, state: "Z" },
-    ]);
+    setProcesses([processRow(), processRow(402)]);
     process.emit("SIGCHLD");
     await vi.advanceTimersByTimeAsync(25);
     expect(proc.wait.mock.calls).toEqual([[401], [402]]);
@@ -310,10 +302,9 @@ describe("adopted process-group cleanup", () => {
   });
 
   it("keeps a pending child for another paced scan", async () => {
-    setProcesses([{ pid: 401, ppid: process.pid, pgid: ROOT, state: "Z" }]);
+    setProcesses([processRow()]);
     proc.wait.mockReturnValueOnce(null);
-    scheduleAdoptedChildZombieReapAfterExit(trackedRoot(true), true);
-    await vi.advanceTimersByTimeAsync(25);
+    await reapAfter();
     expect(proc.wait).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(999);
     expect(proc.wait).toHaveBeenCalledTimes(1);
@@ -322,9 +313,8 @@ describe("adopted process-group cleanup", () => {
   });
 
   it("stops at its deadline while an owned process is still alive", async () => {
-    setProcesses([{ pid: 401, ppid: process.pid, pgid: ROOT, state: "S" }]);
-    scheduleAdoptedChildZombieReapAfterExit(trackedRoot(true), true);
-    await vi.advanceTimersByTimeAsync(31_000);
+    setProcesses([processRow(401, "S")]);
+    await reapAfter(31_000);
     expect(proc.wait).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
     const scans = proc.entries.mock.calls.length;

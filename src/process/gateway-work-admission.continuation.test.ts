@@ -41,29 +41,20 @@ it.each(["absent", "released"] as const)(
     const suspension = tryBeginGatewaySuspendAdmission(() => {});
     expect(suspension?.commit()).toBe(true);
     const closed = new Error("Original callback owner closed");
-    let outcome: "fulfilled" | "rejected" | undefined;
-    let rejection: unknown;
-    const completion = invoke().then(
-      () => {
-        outcome = "fulfilled";
-      },
-      (error: unknown) => {
-        outcome = "rejected";
-        rejection = error;
-      },
-    );
+    const rejected = vi.fn();
+    const completion = invoke().catch(rejected);
     try {
       expect(run).not.toHaveBeenCalled();
       work.beginClose(closed);
       await nextTurn();
       expect
-        .soft(outcome, "owner cancellation must not wait for suspension expiry")
-        .toBe("rejected");
+        .soft(rejected, "owner cancellation must not wait for suspension expiry")
+        .toHaveBeenCalledOnce();
       expect(getActiveGatewayRootWorkCount()).toBe(0);
       suspension?.release();
       await completion;
       expect(run).not.toHaveBeenCalled();
-      expect(rejection).toMatchObject({ cause: closed });
+      expect(rejected.mock.calls[0]?.[0]).toMatchObject({ cause: closed });
     } finally {
       suspension?.release();
       await completion;
