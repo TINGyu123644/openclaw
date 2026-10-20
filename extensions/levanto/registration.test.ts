@@ -3,6 +3,7 @@ import {
   validateDecisionBatchV2,
   validateDecisionResultV2,
   type DecisionBatchV2,
+  type DecisionQuestionV2,
   type DecisionProviderContextV2,
 } from "openclaw/plugin-sdk/decisions";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
@@ -26,7 +27,24 @@ const reported = {
     reasoning: { ran: true, finished: false, tokens: 2, limited: "timeout", forced: true },
   },
 };
-function fixture() {
+const imageBatch: DecisionBatchV2 = {
+  ...batch,
+  state: {
+    type: "image",
+    dataUri:
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aOZkAAAAASUVORK5CYII=",
+  },
+};
+const nativeAnswer = (id: string, kind: string, result: unknown, meta = {}) => ({
+  ok: true,
+  result: { id, kind, result, meta },
+});
+function fixture(response?: Response) {
+  const fetch = vi.fn<typeof globalThis.fetch>();
+  if (response) {
+    fetch.mockResolvedValue(response);
+  }
+  vi.stubGlobal("fetch", fetch);
   const registerDecisionProvider = vi.fn<OpenClawPluginApi["registerDecisionProvider"]>();
   const api = createTestPluginApi({ id: "levanto", registerDecisionProvider });
   const probe = vi.fn(async () => ({ width: 1, height: 1 }));
@@ -54,8 +72,40 @@ function fixture() {
     deadlineMonotonicMs: performance.now() + 500,
     isAdmissible: () => true,
   };
-  return { provider, context, probe };
+  return { provider, context, probe, fetch };
 }
+function sentRequest(fetch: ReturnType<typeof fixture>["fetch"]) {
+  expect(fetch).toHaveBeenCalledOnce();
+  const call = fetch.mock.calls[0];
+  assert(call);
+  const body = call[1]?.body;
+  assert(typeof body === "string");
+  return { url: call[0], body: JSON.parse(body), headers: new Headers(call[1]?.headers) };
+}
+async function expectInterrupted(
+  pending: ReturnType<ReturnType<typeof fixture>["provider"]["evaluate"]>,
+  kind: string,
+  controller: AbortController,
+  started: Promise<void>,
+) {
+  const settled =
+    kind === "abort"
+      ? expect(pending).rejects.toThrow("caller closed")
+      : expect(pending).resolves.toEqual({ status: "unavailable", reason: "transport" });
+  await started;
+  if (kind === "abort") {
+    controller.abort(new Error("caller closed"));
+  } else {
+    await vi.advanceTimersByTimeAsync(501);
+  }
+  await settled;
+  expect(vi.getTimerCount()).toBe(0);
+}
+const questionBatch = (id: string, question: DecisionQuestionV2): DecisionBatchV2 => ({
+  ...batch,
+  questions: { [id]: question },
+});
+const unavailable = (reason: string) => ({ status: "unavailable", reason });
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -64,9 +114,7 @@ afterEach(() => {
 });
 
 it("registers a decision-only agent-scoped provider with standard credential setup", () => {
-  const fetch = vi.fn();
-  vi.stubGlobal("fetch", fetch);
-  const { provider } = fixture();
+  const { provider, fetch } = fixture();
   expect(provider.provider).toMatchObject({
     authScope: "agent",
     envVars: ["LEVANTO_API_KEY"],
@@ -98,9 +146,7 @@ it("registers a decision-only agent-scoped provider with standard credential set
   expect(fetch).not.toHaveBeenCalled();
 });
 it("accepts current native usage and reasoning without double-counting tokens or inventing cost", async () => {
-  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(reported));
-  vi.stubGlobal("fetch", fetch);
-  const { provider, context } = fixture();
+  const { provider, context, fetch } = fixture(Response.json(reported));
   const outcome = await provider.evaluate(batch, { ...context, reasoning: "off" });
   expect(outcome).toMatchObject({
     status: "ok",
@@ -115,24 +161,18 @@ it("accepts current native usage and reasoning without double-counting tokens or
   expect(validateDecisionResultV2(batch, outcome.result)).toBe(true);
   expect(outcome.result.usage).not.toHaveProperty("costUsd");
   expect(outcome.result.usage).not.toHaveProperty("units");
-  expect(fetch).toHaveBeenCalledOnce();
-  const call = fetch.mock.calls[0];
-  assert(call);
-  expect(call[0]).toBe("https://sage.levanto.ai/decide");
-  const body = call[1]?.body;
-  assert(typeof body === "string");
-  expect(JSON.parse(body)).toEqual({
+  const { url, body, headers } = sentRequest(fetch);
+  expect(url).toBe("https://sage.levanto.ai/decide");
+  expect(body).toEqual({
     content: batch.state.type === "text" ? batch.state.text : "",
     question: { id: "q", kind: "yesno", instructions: "Is this urgent?" },
     reasoning: "off",
   });
-  expect(new Headers(call[1]?.headers).get("authorization")).toBe("Bearer synthetic-prepared-key");
+  expect(headers.get("authorization")).toBe("Bearer synthetic-prepared-key");
 });
 it("preserves prepared URL prefixes and private effective headers, without credential fallback", async () => {
-  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(reported));
-  vi.stubGlobal("fetch", fetch);
   vi.stubEnv("LEVANTO_API_KEY", "synthetic-environment-must-not-be-used");
-  const { provider, context } = fixture();
+  const { provider, context, fetch } = fixture(Response.json(reported));
   const model = {
     ...context.model,
     baseUrl: "https://93.184.216.34/prefix",
@@ -165,55 +205,33 @@ it("uses one native batch for mixed scalar kinds and retains partial failures an
       {
         answers: [
           { ok: true, result: reported },
-          {
-            ok: true,
-            result: {
-              id: "c",
-              kind: "choice",
-              result: {
-                chosen: "a",
-                probability: 0.7,
-                probabilities: [
-                  { option: "a", probability: 0.7 },
-                  { option: "b", probability: 0.3 },
-                ],
-              },
-              meta: { model: "levanto-sage-v1.3" },
+          nativeAnswer(
+            "c",
+            "choice",
+            {
+              chosen: "a",
+              probability: 0.7,
+              probabilities: [
+                { option: "a", probability: 0.7 },
+                { option: "b", probability: 0.3 },
+              ],
             },
-          },
-          {
-            ok: true,
-            result: {
-              id: "s",
-              kind: "scale",
-              result: {
-                expectation: 2.41,
-                confidence: 0.71,
-                probabilities: [
-                  { level: 0, probability: 0.02 },
-                  { level: 1, probability: 0.03 },
-                  { level: 2, probability: 0.49 },
-                  { level: 3, probability: 0.44 },
-                  { level: 4, probability: 0.02 },
-                ],
-              },
-              meta: {},
-            },
-          },
-          {
-            ok: true,
-            result: {
-              id: "t",
-              kind: "tags",
-              result: {
-                tags: [
-                  { id: "a", applies: null, probability: 0.51 },
-                  { id: "b", applies: true, probability: 0.99 },
-                ],
-              },
-              meta: {},
-            },
-          },
+            { model: "levanto-sage-v1.3" },
+          ),
+          nativeAnswer("s", "scale", {
+            expectation: 2.41,
+            confidence: 0.71,
+            probabilities: [0.02, 0.03, 0.49, 0.44, 0.02].map((probability, level) => ({
+              level,
+              probability,
+            })),
+          }),
+          nativeAnswer("t", "tags", {
+            tags: [
+              { id: "a", applies: null, probability: 0.51 },
+              { id: "b", applies: true, probability: 0.99 },
+            ],
+          }),
           { ok: false, error: "synthetic question failure", result: null },
         ],
       },
@@ -226,9 +244,7 @@ it("uses one native batch for mixed scalar kinds and retains partial failures an
       latency_ms: 30,
     },
   };
-  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(native));
-  vi.stubGlobal("fetch", fetch);
-  const { provider, context } = fixture();
+  const { provider, context, fetch } = fixture(Response.json(native));
   const outcome = await provider.evaluate(input, context);
   assert(outcome.status === "ok");
   expect(validateDecisionResultV2(input, outcome.result)).toBe(true);
@@ -246,13 +262,8 @@ it("uses one native batch for mixed scalar kinds and retains partial failures an
   const serialized = JSON.stringify(outcome.result.metadata);
   expect(JSON.parse(serialized)).toEqual({ native });
   expect(outcome.result.usage).toMatchObject({ inputTokens: 41, outputTokens: 5 });
-  expect(fetch).toHaveBeenCalledOnce();
-  const call = fetch.mock.calls[0];
-  assert(call);
-  expect(call[0]).toBe("https://sage.levanto.ai/decide/batch");
-  const body = call[1]?.body;
-  assert(typeof body === "string");
-  const sent = JSON.parse(body);
+  const { url, body: sent } = sentRequest(fetch);
+  expect(url).toBe("https://sage.levanto.ai/decide/batch");
   expect(sent.requests).toHaveLength(1);
   expect(sent.requests[0].questions[0].instructions).toContain('"true":"Urgent"');
   expect(sent).not.toHaveProperty("reasoning");
@@ -264,17 +275,15 @@ it("uses one native batch for mixed scalar kinds and retains partial failures an
 it.each([2, 26])(
   "executes a %i-level rubric and preserves its native distribution",
   async (count) => {
-    const input: DecisionBatchV2 = {
-      ...batch,
-      questions: {
-        score: { type: "score", criteria: Array.from({ length: count }, (_, i) => `Level ${i}`) },
-      },
-    };
+    const input = questionBatch("score", {
+      type: "score",
+      criteria: Array.from({ length: count }, (_, i) => `Level ${i}`),
+    });
     const probabilities = Array.from({ length: count }, (_, level) => ({
       level,
       probability: level === count - 1 ? 1 : 0,
     }));
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+    const { provider, context, fetch } = fixture(
       Response.json({
         id: "score",
         kind: "scale",
@@ -282,28 +291,18 @@ it.each([2, 26])(
         meta: {},
       }),
     );
-    vi.stubGlobal("fetch", fetch);
-    const { provider, context } = fixture();
     const outcome = await provider.evaluate(input, context);
-    expect(outcome).toMatchObject({
-      status: "ok",
-      result: {
-        answers: {
-          score: {
-            type: "score",
-            score: count - 1,
-            confidence: 0.8,
-            probabilities: probabilities.map((entry) => entry.probability),
-          },
-        },
+    assert(outcome.status === "ok");
+    expect(outcome.result.answers).toMatchObject({
+      score: {
+        type: "score",
+        score: count - 1,
+        confidence: 0.8,
+        probabilities: probabilities.map((entry) => entry.probability),
       },
     });
-    assert(outcome.status === "ok");
     expect(outcome.result.usage).toBeUndefined();
-    expect(fetch).toHaveBeenCalledOnce();
-    const body = fetch.mock.calls[0]?.[1]?.body;
-    assert(typeof body === "string");
-    expect(JSON.parse(body).question.levels).toEqual(
+    expect(sentRequest(fetch).body.question.levels).toEqual(
       Array.from({ length: count }, (_, level) => ({ level, description: `Level ${level}` })),
     );
   },
@@ -325,9 +324,7 @@ it("preserves native sort without pairwise fan-out", async () => {
     result: { sorted: ["b", "a"], confidence: null },
     meta: {},
   };
-  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(native));
-  vi.stubGlobal("fetch", fetch);
-  const { provider, context } = fixture();
+  const { provider, context, fetch } = fixture(Response.json(native));
   await expect(provider.evaluate(input, context)).resolves.toMatchObject({
     status: "ok",
     result: { answers: { rank: { type: "sort", order: ["b", "a"], confidence: null } } },
@@ -335,38 +332,22 @@ it("preserves native sort without pairwise fan-out", async () => {
   expect(fetch).toHaveBeenCalledOnce();
 });
 it.each<DecisionBatchV2>([
-  { ...batch, questions: { s: { type: "score", criteria: ["only"] } } },
-  {
-    ...batch,
-    questions: { s: { type: "score", criteria: Array.from({ length: 27 }, () => "level") } },
-  },
-  {
-    ...batch,
-    questions: {
-      c: {
-        type: "choice",
-        criteria: Object.fromEntries(Array.from({ length: 121 }, (_, i) => [String(i), null])),
-      },
-    },
-  },
-  {
-    ...batch,
-    questions: {
-      t: {
-        type: "tags",
-        criteria: Object.fromEntries(Array.from({ length: 121 }, (_, i) => [String(i), null])),
-      },
-    },
-  },
-  { ...batch, questions: { s: { type: "sort" } } },
+  questionBatch("s", { type: "score", criteria: ["only"] }),
+  questionBatch("s", { type: "score", criteria: Array.from({ length: 27 }, () => "level") }),
+  questionBatch("c", {
+    type: "choice",
+    criteria: Object.fromEntries(Array.from({ length: 121 }, (_, i) => [String(i), null])),
+  }),
+  questionBatch("t", {
+    type: "tags",
+    criteria: Object.fromEntries(Array.from({ length: 121 }, (_, i) => [String(i), null])),
+  }),
+  questionBatch("s", { type: "sort" }),
 ])("rejects unsupported native input before an effect %#", async (input) => {
-  const fetch = vi.fn();
-  vi.stubGlobal("fetch", fetch);
-  const { provider, context, probe } = fixture();
-  await expect(provider.evaluate(input, context)).resolves.toEqual({
-    status: "unavailable",
-    reason: "unsupported-input",
-  });
+  const { provider, context, probe, fetch } = fixture();
+  await expect(provider.evaluate(input, context)).resolves.toEqual(
+    unavailable("unsupported-input"),
+  );
   expect(fetch).not.toHaveBeenCalled();
   expect(probe).not.toHaveBeenCalled();
 });
@@ -380,38 +361,24 @@ it("rejects a valid Box question before image probing or HTTP", async () => {
     questions: { target: { type: "box", instructions: "the red square" } },
   };
   expect(validateDecisionBatchV2(input)).toBe(true);
-  const fetch = vi.fn();
-  vi.stubGlobal("fetch", fetch);
-  const { provider, context, probe } = fixture();
-  await expect(provider.evaluate(input, context)).resolves.toEqual({
-    status: "unavailable",
-    reason: "unsupported-input",
-  });
+  const { provider, context, probe, fetch } = fixture();
+  await expect(provider.evaluate(input, context)).resolves.toEqual(
+    unavailable("unsupported-input"),
+  );
   expect(probe).not.toHaveBeenCalled();
   expect(fetch).not.toHaveBeenCalled();
 });
 
 it("uses the common image probe once and rejects invalid dimensions before HTTP", async () => {
-  const input: DecisionBatchV2 = {
-    ...batch,
-    state: {
-      type: "image",
-      dataUri:
-        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aOZkAAAAASUVORK5CYII=",
-    },
-  };
-  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(reported));
-  vi.stubGlobal("fetch", fetch);
-  const { provider, context, probe } = fixture();
-  await expect(provider.evaluate(input, context)).resolves.toMatchObject({ status: "ok" });
+  const { provider, context, probe, fetch } = fixture(Response.json(reported));
+  await expect(provider.evaluate(imageBatch, context)).resolves.toMatchObject({ status: "ok" });
   expect(probe).toHaveBeenCalledOnce();
   expect(fetch).toHaveBeenCalledOnce();
   probe.mockResolvedValue({ width: 8193, height: 1 });
   fetch.mockClear();
-  await expect(provider.evaluate(input, context)).resolves.toEqual({
-    status: "unavailable",
-    reason: "unsupported-input",
-  });
+  await expect(provider.evaluate(imageBatch, context)).resolves.toEqual(
+    unavailable("unsupported-input"),
+  );
   expect(fetch).not.toHaveBeenCalled();
 });
 it.each(["false", "throw"])(
@@ -419,34 +386,22 @@ it.each(["false", "throw"])(
   async (kind) => {
     const started = createDeferred<void>();
     const dimensions = createDeferred<{ width: number; height: number }>();
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(reported));
-    vi.stubGlobal("fetch", fetch);
-    const { provider, context, probe } = fixture();
+    const { provider, context, probe, fetch } = fixture(Response.json(reported));
     probe.mockImplementationOnce(() => {
       started.resolve();
       return dimensions.promise;
     });
     let admitted = true;
     const authorityError = new Error("synthetic owner closed during image preparation");
-    const pending = provider.evaluate(
-      {
-        ...batch,
-        state: {
-          type: "image",
-          dataUri:
-            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aOZkAAAAASUVORK5CYII=",
-        },
+    const pending = provider.evaluate(imageBatch, {
+      ...context,
+      isAdmissible: () => {
+        if (!admitted && kind === "throw") {
+          throw authorityError;
+        }
+        return admitted;
       },
-      {
-        ...context,
-        isAdmissible: () => {
-          if (!admitted && kind === "throw") {
-            throw authorityError;
-          }
-          return admitted;
-        },
-      },
-    );
+    });
     const settled =
       kind === "throw"
         ? expect(pending).rejects.toBe(authorityError)
@@ -461,13 +416,9 @@ it.each(["false", "throw"])(
 it.each([401, 402, 429, 503])(
   "classifies HTTP %s without retries or private diagnostics",
   async (status) => {
-    const fetch = vi
-      .fn<typeof globalThis.fetch>()
-      .mockResolvedValue(
-        Response.json({ detail: "synthetic-prepared-key private-evidence" }, { status }),
-      );
-    vi.stubGlobal("fetch", fetch);
-    const { provider, context } = fixture();
+    const { provider, context, fetch } = fixture(
+      Response.json({ detail: "synthetic-prepared-key private-evidence" }, { status }),
+    );
     const outcome = await provider.evaluate(batch, context);
     expect(outcome).toMatchObject({
       status: "unavailable",
@@ -478,12 +429,8 @@ it.each([401, 402, 429, 503])(
   },
 );
 it("rejects malformed native output instead of guessing an answer", async () => {
-  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ ...reported, id: "wrong" })));
-  const { provider, context } = fixture();
-  await expect(provider.evaluate(batch, context)).resolves.toEqual({
-    status: "unavailable",
-    reason: "invalid-response",
-  });
+  const { provider, context } = fixture(Response.json({ ...reported, id: "wrong" }));
+  await expect(provider.evaluate(batch, context)).resolves.toEqual(unavailable("invalid-response"));
 });
 it.each(["abort", "deadline"])(
   "bounds the registered whole response and releases on %s",
@@ -491,38 +438,23 @@ it.each(["abort", "deadline"])(
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
     const started = createDeferred<void>();
     const cancel = vi.fn();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(
-        new Response(
-          new ReadableStream(
-            {
-              pull() {
-                started.resolve();
-              },
-              cancel,
+    const { provider, context } = fixture(
+      new Response(
+        new ReadableStream(
+          {
+            pull() {
+              started.resolve();
             },
-            { highWaterMark: 0 },
-          ),
+            cancel,
+          },
+          { highWaterMark: 0 },
         ),
       ),
     );
-    const { provider, context } = fixture();
     const controller = new AbortController();
     const pending = provider.evaluate(batch, { ...context, signal: controller.signal });
-    const settled =
-      kind === "abort"
-        ? expect(pending).rejects.toThrow("caller closed")
-        : expect(pending).resolves.toEqual({ status: "unavailable", reason: "transport" });
-    await started.promise;
-    if (kind === "abort") {
-      controller.abort(new Error("caller closed"));
-    } else {
-      await vi.advanceTimersByTimeAsync(501);
-    }
-    await settled;
+    await expectInterrupted(pending, kind, controller, started.promise);
     expect(cancel).toHaveBeenCalled();
-    expect(vi.getTimerCount()).toBe(0);
   },
 );
 
@@ -532,35 +464,14 @@ it.each(["abort", "deadline"])(
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
     const started = createDeferred<void>();
     const probeResult = createDeferred<{ width: number; height: number }>();
-    const fetch = vi.fn();
-    vi.stubGlobal("fetch", fetch);
-    const { provider, context, probe } = fixture();
+    const { provider, context, probe, fetch } = fixture();
     probe.mockImplementationOnce(() => {
       started.resolve();
       return probeResult.promise;
     });
-    const input: DecisionBatchV2 = {
-      ...batch,
-      state: {
-        type: "image",
-        dataUri:
-          "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aOZkAAAAASUVORK5CYII=",
-      },
-    };
     const controller = new AbortController();
-    const pending = provider.evaluate(input, { ...context, signal: controller.signal });
-    const settled =
-      kind === "abort"
-        ? expect(pending).rejects.toThrow("caller closed")
-        : expect(pending).resolves.toEqual({ status: "unavailable", reason: "transport" });
-    await started.promise;
-    if (kind === "abort") {
-      controller.abort(new Error("caller closed"));
-    } else {
-      await vi.advanceTimersByTimeAsync(501);
-    }
-    await settled;
-    expect(vi.getTimerCount()).toBe(0);
+    const pending = provider.evaluate(imageBatch, { ...context, signal: controller.signal });
+    await expectInterrupted(pending, kind, controller, started.promise);
     expect(fetch).not.toHaveBeenCalled();
     probeResult.resolve({ width: 1, height: 1 });
     await probeResult.promise;
@@ -572,9 +483,7 @@ it.each(["abort", "deadline"])(
 it.each(["levanto", "Levanto"])(
   "consumes prepared SecretRef/auth headers for %s without replaying config credentials",
   async (providerId) => {
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(reported));
-    vi.stubGlobal("fetch", fetch);
-    const { provider, context } = fixture();
+    const { provider, context, fetch } = fixture(Response.json(reported));
     const outcome = await provider.evaluate(batch, {
       ...context,
       model: {
@@ -616,9 +525,7 @@ it.each(["levanto", "Levanto"])(
 );
 
 it("keeps prepared bearer auth for an explicit provider-default policy", async () => {
-  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(reported));
-  vi.stubGlobal("fetch", fetch);
-  const { provider, context } = fixture();
+  const { provider, context, fetch } = fixture(Response.json(reported));
   const outcome = await provider.evaluate(batch, {
     ...context,
     config: {
