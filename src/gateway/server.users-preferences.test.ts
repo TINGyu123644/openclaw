@@ -86,28 +86,24 @@ test("named preferences stay profile-scoped over authenticated multi-agent Gatew
           payload: { status: "ok", entries: { [key]: value } },
         });
       }
-      const ownKey = "agent:research:own";
-      await upsertSessionEntryCore(
-        { agentId: "research", sessionKey: ownKey },
-        {
-          sessionId: "own-session",
-          updatedAt: 1,
-          createdActor: { type: "human", source: "profile", id: reader.id },
-        },
-      );
+      async function seedSession(name: string, profileId: string) {
+        const key = `agent:research:${name}`;
+        await upsertSessionEntryCore(
+          { agentId: "research", sessionKey: key },
+          {
+            sessionId: `${name}-session`,
+            updatedAt: 1,
+            createdActor: { type: "human", source: "profile", id: profileId },
+          },
+        );
+        return key;
+      }
+      const ownKey = await seedSession("own", reader.id);
       expect(await rpcReq(socket, "sessions.preview", { keys: [ownKey] })).toMatchObject({
         ok: true,
       });
       const other = ensureProfileForEmail("foreign-owner@example.test");
-      const key = "agent:research:foreign";
-      await upsertSessionEntryCore(
-        { agentId: "research", sessionKey: key },
-        {
-          sessionId: "foreign-session",
-          updatedAt: 1,
-          createdActor: { type: "human", source: "profile", id: other.id },
-        },
-      );
+      const key = await seedSession("foreign", other.id);
       expect(await rpcReq(socket, "sessions.preview", { keys: [key] })).toMatchObject({
         ok: false,
         error: { code: "INVALID_REQUEST" },

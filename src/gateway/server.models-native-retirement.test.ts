@@ -75,37 +75,28 @@ it.each(["native", "custom"] as const)(
         });
         expect(owner?.metadataSnapshot.plugins.some((plugin) => plugin.id === "xai")).toBe(true);
         type Row = { provider: string; id: string; available?: boolean };
-        const observed: Array<{ view: string; preparedOnly: boolean; model?: Row }> = [];
+        const findModel = (rows: Row[]) =>
+          rows.find((row) => row.provider === "personal" && row.id === "auto");
         for (const preparedOnly of [true, false]) {
           for (const view of ["default", "configured"] as const) {
             const response = await gateway.client.request<{ models: Row[] }>("models.list", {
               view,
               preparedOnly,
             });
-            observed.push({
-              view,
-              preparedOnly,
-              model: response.models.find(
-                (row) => row.provider === "personal" && row.id === "auto",
-              ),
-            });
+            const model = findModel(response.models);
+            const context = JSON.stringify({ view, preparedOnly, model });
+            if (endpoint === "native") {
+              expect(model, context).toBeUndefined();
+            } else {
+              expect(model?.available, context).toBe(true);
+            }
           }
         }
         const admin = await gateway.client.request<{ models: Row[] }>("models.list", {
           view: "provider-config",
           preparedOnly: true,
         });
-        const adminModel = admin.models.find(
-          (row) => row.provider === "personal" && row.id === "auto",
-        );
-        expect(adminModel?.id).toBe("auto");
-        for (const result of observed) {
-          if (endpoint === "native") {
-            expect(result.model, JSON.stringify(result)).toBeUndefined();
-          } else {
-            expect(result.model?.available, JSON.stringify(result)).toBe(true);
-          }
-        }
+        expect(findModel(admin.models)?.id).toBe("auto");
       },
       () => gateway && disconnectGatewayClient(gateway.client),
       () => gateway?.server.close({ reason: "auto model-list proof complete" }),
