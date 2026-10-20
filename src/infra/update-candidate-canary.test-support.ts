@@ -131,12 +131,9 @@ export function registerCanarySnapshotCapacityTests(fixture: {
     const onStep = vi.fn();
     try {
       const env = { TMPDIR: "/synthetic/tmp" };
+      const reason = "candidate-snapshot-failed";
       const result = await validateUpdateCandidateCanary({ ...canaryStateOptions(), env, onStep });
-      expect(result).toMatchObject({
-        status: "error",
-        phase: "snapshot",
-        reason: "candidate-snapshot-failed",
-      });
+      expect(result).toMatchObject({ status: "error", phase: "snapshot", reason });
       const updateResult = { ...result, mode: "git" as const, root: getRoot() };
       const nextAction = resolveUpdateResultNextAction({
         result: updateResult,
@@ -147,10 +144,8 @@ export function registerCanarySnapshotCapacityTests(fixture: {
         nextAction,
       });
       expect(report).toMatchObject({
-        headline: expect.stringContaining("OpenClaw update failed: candidate-snapshot-failed"),
-        markdown: expect.stringContaining(
-          "Fix candidate-snapshot-failed then run `openclaw update` again.",
-        ),
+        headline: expect.stringContaining(`OpenClaw update failed: ${reason}`),
+        markdown: expect.stringContaining(`Fix ${reason} then run \`openclaw update\` again.`),
       });
       const failed = canaryOutcomeStep(result.steps);
       expect(failed).toMatchObject({
