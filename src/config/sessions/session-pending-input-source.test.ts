@@ -85,28 +85,13 @@ describe("submitted input source evidence", () => {
             receipt.inputId,
           );
         } else {
-          const payload = prepareTranscriptPayload(db, `{"message":${messageJson}}`);
-          db.prepare(
-            `UPDATE transcript_events SET event_json = ?, event_zstd = ?, event_utf8_bytes = ?, navigation_json = ?,
-              navigation_type = ?, navigation_custom_type = ?, navigation_display = ?, message_role = ?,
-              navigation_last_type = ?, navigation_last_custom_type = ?, navigation_valid = ?
-              WHERE session_id = ? AND seq = (SELECT seq FROM transcript_event_identities WHERE session_id = ? AND event_id = ?)`,
-          ).run(
-            payload.event_json,
-            payload.event_zstd,
-            payload.event_utf8_bytes,
-            payload.navigation_json,
-            payload.navigation_type,
-            payload.navigation_custom_type,
-            payload.navigation_display,
-            payload.message_role,
-            payload.navigation_last_type,
-            payload.navigation_last_custom_type,
-            payload.navigation_valid,
-            sessionId,
-            sessionId,
-            receipt.inputId,
+          const payload = Object.entries(
+            prepareTranscriptPayload(db, `{"message":${messageJson}}`),
           );
+          db.prepare(
+            `UPDATE transcript_events SET ${payload.map(([column]) => `${column} = ?`).join(", ")}
+              WHERE session_id = ? AND seq = (SELECT seq FROM transcript_event_identities WHERE session_id = ? AND event_id = ?)`,
+          ).run(...payload.map(([, value]) => value), sessionId, sessionId, receipt.inputId);
         }
         db.exec("PRAGMA query_only = ON");
         try {
@@ -140,9 +125,11 @@ describe("submitted input source evidence", () => {
             : "UPDATE session_transcript_index_state SET indexed_seq = -1 WHERE session_id = ?";
         db.prepare(statement).run(sessionId);
       }
-      const before = db
-        .prepare("SELECT * FROM session_transcript_index_state WHERE session_id = ?")
-        .get(sessionId);
+      const readIndex = () =>
+        db
+          .prepare("SELECT * FROM session_transcript_index_state WHERE session_id = ?")
+          .get(sessionId);
+      const before = readIndex();
       db.exec("PRAGMA query_only = ON");
       try {
         await expect(
@@ -151,11 +138,7 @@ describe("submitted input source evidence", () => {
       } finally {
         db.exec("PRAGMA query_only = OFF");
       }
-      expect(
-        db
-          .prepare("SELECT * FROM session_transcript_index_state WHERE session_id = ?")
-          .get(sessionId),
-      ).toEqual(before);
+      expect(readIndex()).toEqual(before);
     },
   );
 });

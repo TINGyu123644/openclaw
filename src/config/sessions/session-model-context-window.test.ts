@@ -26,18 +26,27 @@ function sizing(bytes: number[]) {
     new Map(requests.map(({ entry }) => [entry, bytes[entry.seq]!]));
 }
 
+const user = (seq: number, content = `request ${seq}`) =>
+  request(seq, { role: "user", content, timestamp: seq });
+const assistant = (
+  seq: number,
+  text: string,
+  overrides: Partial<Parameters<typeof makeAgentAssistantMessage>[0]> = {},
+) => request(seq, makeAgentAssistantMessage({ content: [{ type: "text", text }], ...overrides }));
+function selectSeqs(requests: ModelContextRequest[], prefixBytes: number) {
+  return selectBoundedModelRequests(
+    requests,
+    sizing([0, 300, 300, 300, 300]),
+    { maxEvents: 4, maxBytes: 1000 },
+    { count: 1, bytes: prefixBytes, hasUser: true, pairing: new Map() },
+  ).map(({ entry }) => entry.seq);
+}
+
 it("retains the last inference model when command history and provider output leave the bounded window", () => {
   const entries = [
-    request(0, makeAgentAssistantMessage({ content: [{ type: "text", text: "answer" }] })).entry,
-    request(
-      1,
-      makeAgentAssistantMessage({
-        provider: "openclaw",
-        model: "command",
-        content: [{ type: "text", text: "Command completed" }],
-      }),
-    ).entry,
-    request(2, { role: "user", content: "next turn", timestamp: 2 }).entry,
+    assistant(0, "answer").entry,
+    assistant(1, "Command completed", { provider: "openclaw", model: "command" }).entry,
+    user(2, "next turn").entry,
   ];
   const context = projectSessionModelContext(
     {
@@ -61,8 +70,8 @@ it("retains the last inference model when command history and provider output le
 
 it("preserves a newest tool turn using headroom when its final reply arrives", () => {
   const requests = [
-    request(0, { role: "user", content: "older history", timestamp: 0 }),
-    request(1, { role: "user", content: "current request", timestamp: 1 }),
+    user(0, "older history"),
+    user(1, "current request"),
     request(
       2,
       makeAgentAssistantMessage({
@@ -78,7 +87,7 @@ it("preserves a newest tool turn using headroom when its final reply arrives", (
       timestamp: 2,
       isError: false,
     }),
-    request(4, makeAgentAssistantMessage({ content: [{ type: "text", text: "final reply" }] })),
+    assistant(4, "final reply"),
   ];
   const readSizes = sizing([4000, 500, 1000, 7500, 300]);
   const limits = { maxBytes: 10_000, maxEvents: 100 };
@@ -102,12 +111,7 @@ it("reserves the compaction event slot before deciding that history exceeds the 
     },
     omitCheckpoint: false,
   };
-  const requests = [
-    boundary,
-    ...[1, 2, 3].map((seq) =>
-      request(seq, { role: "user", content: `request ${seq}`, timestamp: seq }),
-    ),
-  ];
+  const requests = [boundary, ...[1, 2, 3].map((seq) => user(seq))];
   expect(
     selectBoundedModelRequests(requests, sizing([100, 400, 400, 400]), {
       maxBytes: 1000,
@@ -122,30 +126,16 @@ it.each([
 ])(
   "keeps the absolute byte cutoff with $prefixBytes discarded bytes",
   ({ prefixBytes, selected }) => {
-    const requests = [1, 2, 3, 4].map((seq) =>
-      request(seq, { role: "user", content: `request ${seq}`, timestamp: seq }),
-    );
     expect(
-      selectBoundedModelRequests(
-        requests,
-        sizing([0, 300, 300, 300, 300]),
-        { maxEvents: 4, maxBytes: 1000 },
-        { count: 1, bytes: prefixBytes, hasUser: true, pairing: new Map() },
-      ).map(({ entry }) => entry.seq),
+      selectSeqs(
+        [1, 2, 3, 4].map((seq) => user(seq)),
+        prefixBytes,
+      ),
     ).toEqual(selected);
   },
 );
 
 it("uses atomic headroom when the newest user turn starts in the discarded prefix", () => {
-  const requests = [1, 2, 3, 4].map((seq) =>
-    request(seq, makeAgentAssistantMessage({ content: [{ type: "text", text: `reply ${seq}` }] })),
-  );
-  expect(
-    selectBoundedModelRequests(
-      requests,
-      sizing([0, 300, 300, 300, 300]),
-      { maxEvents: 4, maxBytes: 1000 },
-      { count: 1, bytes: 100, hasUser: true, pairing: new Map() },
-    ).map(({ entry }) => entry.seq),
-  ).toEqual([2, 3, 4]);
+  const requests = [1, 2, 3, 4].map((seq) => assistant(seq, `reply ${seq}`));
+  expect(selectSeqs(requests, 100)).toEqual([2, 3, 4]);
 });
