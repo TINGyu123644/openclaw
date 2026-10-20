@@ -55,9 +55,7 @@ vi.mock("./openclaw-state-db-read-connection.js", () => ({
 import "./openclaw-state-read.worker.js";
 
 const request: OpenClawStateReadRequest = {
-  context: {
-    environment: { OPENCLAW_STATE_DIR: "/fixture" },
-  },
+  context: { environment: { OPENCLAW_STATE_DIR: "/fixture" } },
   databasePath: "/fixture/state.sqlite",
   location: "/fixture/snapshot.sqlite",
   checkFreshAdmission: false,
@@ -78,29 +76,15 @@ beforeEach(() => {
 });
 
 it.each([
-  {
-    command: {
-      type: "plugins.metadata.read" as const,
-      input: { stateKeys: ["plugins.bundledDiscovery"] },
-    },
-    result: { rows: [{ state_key: "plugins.bundledDiscovery", value_json: '"allowlist"' }] },
-  },
-  {
-    command: { type: "gatewayOwnerLease.read" as const, schemaMaintenance: false },
-    result: { lease: undefined },
-  },
-  {
-    command: { type: "agentDatabaseRegistry.read" as const },
-    result: { result: { status: "available", entries: [] } },
-  },
-])("reads $command.type without loading unrelated handlers", async ({ command, result }) => {
+  [
+    { type: "plugins.metadata.read", input: { stateKeys: ["plugins.bundledDiscovery"] } },
+    { rows: [{ state_key: "plugins.bundledDiscovery", value_json: '"allowlist"' }] },
+  ],
+  [{ type: "gatewayOwnerLease.read", schemaMaintenance: false }, { lease: undefined }],
+  [{ type: "agentDatabaseRegistry.read" }, { result: { status: "available", entries: [] } }],
+] as const)("reads %j without loading unrelated handlers", async (command, result) => {
   const reply = await mock.handler({ ...request, command });
-  expect(reply).toEqual({
-    ok: true,
-    type: command.type,
-    sourceAdmitted: true,
-    ...result,
-  });
+  expect(reply).toEqual({ ok: true, type: command.type, sourceAdmitted: true, ...result });
   if (command.type === "agentDatabaseRegistry.read") {
     expect(mock.query).toHaveBeenCalledExactlyOnceWith({}, request.databasePath, false);
   }
@@ -135,12 +119,7 @@ it.each([
   if (type === "backup.runs" || outcome === "cleanup-error") {
     expect(reply).toMatchObject({ ok: false, message: failure.message, sourceAdmitted });
   } else {
-    expect(reply).toEqual({
-      ok: true,
-      type,
-      sourceAdmitted,
-      result: { status: "unavailable" },
-    });
+    expect(reply).toEqual({ ok: true, type, sourceAdmitted, result: { status: "unavailable" } });
   }
   expect(mock.query).toHaveBeenCalledTimes(outcome === "schema-error" ? 0 : 1);
 });
