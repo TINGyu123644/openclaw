@@ -1,6 +1,3 @@
-/**
- * Tests webhook memory guard counters, rate limits, and anomaly tracking.
- */
 import { describe, expect, it } from "vitest";
 import {
   createBoundedCounter,
@@ -9,6 +6,14 @@ import {
   WEBHOOK_ANOMALY_COUNTER_DEFAULTS,
   WEBHOOK_RATE_LIMIT_DEFAULTS,
 } from "./webhook-memory-guards.js";
+
+function loggedTracker(options: Parameters<typeof createWebhookAnomalyTracker>[0]) {
+  const logs: string[] = [];
+  const tracker = createWebhookAnomalyTracker(options);
+  const record = (key = "k", statusCode = 401, label = "hit") =>
+    tracker.record({ key, statusCode, message: (n) => `${label}:${n}`, log: (m) => logs.push(m) });
+  return { logs, record };
+}
 
 describe("createFixedWindowRateLimiter", () => {
   it("falls back for non-finite fixed-window options", () => {
@@ -25,37 +30,33 @@ describe("createFixedWindowRateLimiter", () => {
     expect(limiter.isRateLimited("k", 2_000)).toBe(true);
   });
 
-  it.each([
-    {
-      name: "resets counters after the window elapses",
-      calls: [100, 101, 111],
-      expected: [false, true, false],
-    },
-  ])("$name", ({ calls, expected }) => {
+  it("resets counters after the window elapses", () => {
     const limiter = createFixedWindowRateLimiter({
       windowMs: 10,
       maxRequests: 1,
       maxTrackedKeys: 100,
     });
 
-    expect(calls.map((nowMs) => limiter.isRateLimited("k", nowMs))).toEqual(expected);
+    expect([100, 101, 111].map((nowMs) => limiter.isRateLimited("k", nowMs))).toEqual([
+      false,
+      true,
+      false,
+    ]);
   });
 });
 
-describe("webhook memory guard key caps", () => {
-  it("createFixedWindowRateLimiter caps tracked keys", () => {
-    const limiter = createFixedWindowRateLimiter({
-      windowMs: 60_000,
-      maxRequests: 10,
-      maxTrackedKeys: 5,
-    });
-
-    for (let i = 0; i < 20; i += 1) {
-      limiter.isRateLimited(`key-${i}`, 1_000 + i);
-    }
-
-    expect(limiter.size()).toBeLessThanOrEqual(5);
+it("createFixedWindowRateLimiter caps tracked keys", () => {
+  const limiter = createFixedWindowRateLimiter({
+    windowMs: 60_000,
+    maxRequests: 10,
+    maxTrackedKeys: 5,
   });
+
+  for (let i = 0; i < 20; i += 1) {
+    limiter.isRateLimited(`key-${i}`, 1_000 + i);
+  }
+
+  expect(limiter.size()).toBeLessThanOrEqual(5);
 });
 
 describe("createBoundedCounter", () => {
@@ -83,57 +84,23 @@ describe("createBoundedCounter", () => {
 
 describe("createWebhookAnomalyTracker", () => {
   it("ignores untracked statuses and empty keys and logs tracked events at configured cadence", () => {
-    const logs: string[] = [];
-    const tracker = createWebhookAnomalyTracker({
-      trackedStatusCodes: [401],
-      logEvery: 2,
-    });
-
+    const { logs, record } = loggedTracker({ trackedStatusCodes: [401], logEvery: 2 });
     const counts = [
-      {
-        key: "k",
-        statusCode: 415,
-        message: (count: number) => `ignored:${count}`,
-      },
-      {
-        key: "",
-        statusCode: 401,
-        message: (count: number) => `ignored:${count}`,
-      },
-      {
-        key: "k",
-        statusCode: 401,
-        message: (count: number) => `hit:${count}`,
-      },
-      {
-        key: "k",
-        statusCode: 401,
-        message: (count: number) => `hit:${count}`,
-      },
-    ].map(({ key, statusCode, message }) =>
-      tracker.record({
-        key,
-        statusCode,
-        message,
-        log: (msg) => logs.push(msg),
-      }),
-    );
+      record("k", 415, "ignored"),
+      record("", 401, "ignored"),
+      record("k", 401, "hit"),
+      record("k", 401, "hit"),
+    ];
 
     expect(counts).toEqual([0, 0, 1, 2]);
     expect(logs).toEqual(["hit:1", "hit:2"]);
   });
 
   it("falls back for non-finite anomaly logging cadence", () => {
-    const logs: string[] = [];
-    const tracker = createWebhookAnomalyTracker({ logEvery: Number.NaN });
+    const { logs, record } = loggedTracker({ logEvery: Number.NaN });
 
     for (let index = 0; index < WEBHOOK_ANOMALY_COUNTER_DEFAULTS.logEvery; index += 1) {
-      tracker.record({
-        key: "k",
-        statusCode: 401,
-        message: (count) => `hit:${count}`,
-        log: (message) => logs.push(message),
-      });
+      record();
     }
 
     expect(logs).toEqual(["hit:1", `hit:${WEBHOOK_ANOMALY_COUNTER_DEFAULTS.logEvery}`]);
