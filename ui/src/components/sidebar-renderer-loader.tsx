@@ -5,7 +5,9 @@ import { createIdleImport } from "../lib/idle-import.ts";
 export function createSidebarRendererLoader<T>(importModule: () => Promise<T>) {
   const resets = new Set<() => void>();
   const importer = createIdleImport(importModule, () => {
-    for (const reset of [...resets]) {
+    // Reset replaces fallback registrations while this set is being traversed.
+    const mountedResets = [...resets];
+    for (const reset of mountedResets) {
       reset();
     }
   });

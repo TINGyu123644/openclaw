@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, lazy, onSettled, Show } from "solid-js";
+import { createMemo, lazy, Show } from "solid-js";
 import type {
   FsListDirResult,
   WorktreeRepositoryStatus,

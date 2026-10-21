@@ -292,7 +292,6 @@ export function createSidebarMenus(deps: {
       return () => listeners.delete(listener);
     },
     dispose(): void {
-      disposed = true;
       menus.disconnect();
       listeners.clear();
     },
@@ -668,7 +667,7 @@ export function createSidebarMenus(deps: {
               menus={projected}
               host={view}
               avatars={avatars.read}
-              withActiveRoutes={agentMenuAvatars.withActiveRoutes}
+              withActiveRoutes={(render) => agentMenuAvatars.withActiveRoutes(render)}
             />
           </Boundary>
         </Show>,
