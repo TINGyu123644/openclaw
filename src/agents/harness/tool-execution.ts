@@ -1,5 +1,4 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
 import {
   consumeAdjustedParamsForToolCall,
   consumePreExecutionBlockedToolCall,
@@ -47,9 +46,7 @@ export function createAgentHarnessToolExecutionBoundaryRegistry() {
       arguments: Record<string, unknown>;
       retainAfterCompletion?: boolean;
     }) {
-      let executedArguments: Readonly<Record<string, unknown>> = freezeJsonSnapshot(
-        structuredClone(params.arguments),
-      );
+      let executedArguments: Readonly<Record<string, unknown>> = structuredClone(params.arguments);
       let didDispatchExecution = false;
       let didStartExecution = false;
       let executionPrevented = false;
@@ -77,7 +74,7 @@ export function createAgentHarnessToolExecutionBoundaryRegistry() {
           return didStartExecution && !executionPrevented;
         },
         setArguments(args: Record<string, unknown>) {
-          executedArguments = freezeJsonSnapshot(structuredClone(args));
+          executedArguments = structuredClone(args);
         },
         markDispatched() {
           didDispatchExecution = true;

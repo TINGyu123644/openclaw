@@ -1,5 +1,4 @@
 import { pruneMapToMaxSize } from "../infra/map-size.js";
-import { freezeJsonSnapshot } from "../shared/immutable-data.js";
 
 /** Detached execution facts; internal readers borrow the same snapshot. */
 export const adjustedParamsByToolCallId = new Map<string, unknown>();
@@ -16,7 +15,7 @@ export function buildAdjustedParamsKey(params: { runId?: string; toolCallId: str
   return params.toolCallId;
 }
 
-/** Capture before mutable tool/plugin execution; never freeze the executor's input. */
+/** Detach before mutable execution; mutable hook/middleware inputs get their own copies. */
 export function recordAdjustedParamsForToolCall(
   toolCallId: string | undefined,
   params: unknown,
@@ -27,7 +26,7 @@ export function recordAdjustedParamsForToolCall(
   }
   let snapshot: unknown;
   try {
-    snapshot = freezeJsonSnapshot(structuredClone(params));
+    snapshot = structuredClone(params);
   } catch {
     return;
   }
