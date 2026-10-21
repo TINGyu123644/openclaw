@@ -12,6 +12,7 @@ import { NodeWorkerLaunchStore } from "./node-worker-launch-store.js";
 import * as worker from "./node-worker-supervisor.test-support.js";
 import { prepareNodeHostRuntime } from "./runtime.js";
 
+// mock-isolation: worker lifetime proof must not modify the host PATH.
 vi.mock("../infra/path-env.js", () => ({ ensureOpenClawCliOnPath: vi.fn() }));
 
 vi.mock("./mcp.js", () => ({
@@ -22,6 +23,7 @@ vi.mock("./mcp.js", () => ({
   })),
 }));
 
+// mock-isolation: the supervisor owns real workers here, but no plugin-host services are enabled.
 vi.mock("./plugin-node-host.js", () => ({
   ensureNodeHostPluginRegistry: vi.fn(async () => undefined),
   hasRegisteredNodeHostCommandActiveWork: vi.fn(() => false),

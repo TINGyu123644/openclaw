@@ -59,12 +59,18 @@ it.each([
   { parts: ["NO_REPLY"], display: undefined, hidden: true },
   { parts: ["no_", "reply\n[[audio_as_voice]]No_Reply"], display: undefined, hidden: false },
   { parts: ["No_Reply"], display: undefined, hidden: true },
-  { parts: ["[[audio_as_voice]]NO_REPLY"], inputDisplay: false, display: false, hidden: true },
-])("preserves visibility of $parts", ({ parts, inputDisplay, display, hidden }) => {
+  {
+    parts: ["[[audio_as_voice]]NO_REPLY"],
+    inputDisplay: false,
+    display: false,
+    hidden: true,
+    unsigned: true,
+  },
+])("preserves visibility of $parts", ({ parts, inputDisplay, display, hidden, unsigned }) => {
   const message = {
     role: "assistant",
     ...(inputDisplay === undefined ? {} : { display: inputDisplay }),
-    content: parts.map((text) => part(text, "final_answer")),
+    content: parts.map((text) => (unsigned ? { type: "text", text } : part(text, "final_answer"))),
   };
   const prepared = applyAssistantDeliveryDirectives(message);
   expect("display" in prepared ? prepared.display : undefined).toBe(display);

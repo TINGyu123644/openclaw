@@ -24,8 +24,11 @@ const mocks = vi.hoisted(() => {
   };
 });
 
+// mock-isolation: runtime lifecycle tests must not mutate the host PATH.
 vi.mock("../infra/path-env.js", () => ({ ensureOpenClawCliOnPath: vi.fn() }));
+// mock-isolation: the controlled invocation promise exposes runtime cancellation and cleanup.
 vi.mock("./invoke.js", () => ({ handleInvoke: mocks.handleInvoke }));
+// mock-isolation: controlled MCP startup and close avoid launching real MCP services.
 vi.mock("./mcp.js", () => ({ startNodeHostMcpManager: mocks.startMcp }));
 
 vi.mock("./node-invoke-progress.js", () => ({
@@ -37,6 +40,7 @@ vi.mock("./node-invoke-progress.js", () => ({
   })),
 }));
 
+// mock-isolation: runtime lifecycle tests control worker activity and settlement without workers.
 vi.mock("./node-worker-supervisor.js", () => ({
   createNodeWorkerSupervisor: vi.fn(() => ({
     initialize: async () => undefined,
@@ -65,6 +69,7 @@ vi.mock("./plugin-node-host.js", () => ({
   })),
 }));
 
+// mock-isolation: runtime lifecycle tests have no host skills to discover.
 vi.mock("./skills.js", () => ({ scanNodeHostedSkills: vi.fn(() => []) }));
 
 // Retain local bindings after mock registration for Vitest's export transform.

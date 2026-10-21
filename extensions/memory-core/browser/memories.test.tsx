@@ -295,8 +295,10 @@ describe("Memory Core indexed-search presentation", () => {
   });
 
   it("shows stale guidance alongside empty results and clears it after a fresh search", async () => {
-    const warning = "Memory index is stale: index scope changed.";
-    const action = "Run: openclaw memory status --index --agent main.";
+    const warning =
+      "Memory index is stale: index scope changed (owner: configuration, code: scope). Search results may be incomplete.";
+    const action =
+      "Run: openclaw memory status --index --agent main. Rebuilding uses keyword indexing only and does not call an embedding provider.";
     const fresh = { ...result, snippet: "Freshly indexed Ada prefers careful reviews." };
     const request = vi
       .fn<Request>()

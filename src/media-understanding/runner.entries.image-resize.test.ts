@@ -12,6 +12,7 @@ const { imagePolicy } = vi.hoisted(() => ({
   imagePolicy: vi.fn<() => Promise<ImageCompressionModelPolicy>>(),
 }));
 
+// mock-isolation: resize cases select a fixed compression policy without provider discovery.
 vi.mock("../agents/image-compression-policy.js", () => ({
   resolveImageCompressionModelPolicy: imagePolicy,
 }));
@@ -36,18 +37,23 @@ async function setupProvider(source: Buffer, options: ImageFixtureOptions = {}) 
   );
   const description = { text: "described", model: "vision-v1" };
   const describeImage = vi.fn(async (_request: ImageDescriptionRequest) => description);
-  const run = () =>
-    runProviderEntry({
-      capability: "image",
-      entry: { provider: "vision-plugin", model: "vision-v1", maxBytes: options.maxBytes },
-      cfg: options.cfg ?? {},
-      attachmentIndex: 0,
-      cache,
-      agentDir: root,
-      providerRegistry: new Map<string, MediaUnderstandingProvider>([
-        ["vision-plugin", { id: "vision-plugin", capabilities: ["image"], describeImage }],
-      ]),
-    }).finally(() => cache.cleanup());
+  const run = async () => {
+    try {
+      return await runProviderEntry({
+        capability: "image",
+        entry: { provider: "vision-plugin", model: "vision-v1", maxBytes: options.maxBytes },
+        cfg: options.cfg ?? {},
+        attachmentIndex: 0,
+        cache,
+        agentDir: root,
+        providerRegistry: new Map<string, MediaUnderstandingProvider>([
+          ["vision-plugin", { id: "vision-plugin", capabilities: ["image"], describeImage }],
+        ]),
+      });
+    } finally {
+      await cache.cleanup();
+    }
+  };
   return {
     async describe() {
       await expect(run()).resolves.toMatchObject({

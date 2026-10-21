@@ -115,7 +115,9 @@ describe("registered DeepInfra cache wrapper", () => {
   ] as const)(
     "composes managed requests with $cacheRetention retention and string-only=$requiresStringContent",
     async ({ cacheRetention, requiresStringContent }) => {
-      const model = {
+      const model: Model<"openai-completions"> & {
+        compat: { requiresStringContent: boolean };
+      } = {
         ...makeModel("anthropic/claude-sonnet-4-6"),
         compat: { requiresStringContent },
       };

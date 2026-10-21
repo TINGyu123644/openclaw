@@ -5,6 +5,7 @@ import { withSessionManagerWrite } from "../agents/sessions/session-manager-writ
 import { SessionManager } from "../agents/sessions/session-manager.js";
 import type { SessionActor } from "../config/sessions/session-actor-contract.js";
 import { memorySessionActorOwners } from "../config/sessions/session-actor-memory-owner.js";
+import type { InternalSessionEntry } from "../config/sessions/types.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
 import { createGatewayCloseRace } from "./server-close.race.test-support.js";
 
@@ -21,7 +22,12 @@ it("settles an accepted memory manager append before the real close retires its 
       agentId: "main",
       path: resolveIncognitoOpenClawAgentSqlitePath({ agentId: "main", env: fixture.state.env }),
     });
-    const entry = { sessionId: "close", lifecycleRevision: "r", incognito: true, updatedAt: 1 };
+    const entry = {
+      sessionId: "close",
+      lifecycleRevision: "r",
+      incognito: true,
+      updatedAt: 1,
+    } satisfies InternalSessionEntry;
     const target = {
       agentId: "main",
       sessionKey: "agent:main:dashboard:incognito-close",

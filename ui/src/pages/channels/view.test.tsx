@@ -53,9 +53,8 @@ function channelProps(
   return createProps(channelSnapshot(channels, overrides));
 }
 
-const query = <T extends Element = HTMLElement>(root: ParentNode, selector: string) =>
-  root.querySelector<T>(selector);
-const text = (root: ParentNode, selector: string) => query(root, selector)?.textContent?.trim();
+const text = (root: ParentNode, selector: string) =>
+  root.querySelector(selector)?.textContent?.trim();
 const texts = (root: ParentNode, selector: string) =>
   Array.from(root.querySelectorAll(selector), (node) => node.textContent?.trim());
 const facts = (root: ParentNode) =>
@@ -138,7 +137,9 @@ describe("channels plugin presentation metadata", () => {
       "OpenClaw Slack channel plugin for channels, DMs, commands, and app events.",
     );
     expect(row?.querySelector("img")?.getAttribute("src")).toBe("blob:slack-plugin-icon");
-    const detailIcon = query(container, ".channels-detail__header .channels-cover--icon img");
+    const detailIcon = container.querySelector(
+      ".channels-detail__header .channels-cover--icon img",
+    );
     expect(detailIcon?.getAttribute("src")).toBe("blob:slack-plugin-icon");
     expect(container.querySelector(".channels-wizard h2")?.textContent).toBe("Set up Slack");
     expect(container.querySelector(".channels-wizard img")?.getAttribute("src")).toBe(
@@ -486,7 +487,9 @@ describe("channel config advanced tier", () => {
 
     expect(container.textContent).toContain("Enabled");
     expect(container.textContent).not.toContain("Timeout Ms");
-    const disclosure = query<HTMLDetailsElement>(container, "details.config-advanced-disclosure");
+    const disclosure = container.querySelector<HTMLDetailsElement>(
+      "details.config-advanced-disclosure",
+    );
     expect(disclosure?.open).toBe(false);
     expect(disclosure?.querySelector("summary")?.textContent?.trim()).toBe("Advanced settings");
     disclosure!.open = true;
@@ -500,7 +503,9 @@ describe("channel config advanced tier", () => {
       "channels.whatsapp.enabled": { advanced: true },
     });
 
-    const disclosure = query<HTMLDetailsElement>(container, "details.config-advanced-disclosure");
+    const disclosure = container.querySelector<HTMLDetailsElement>(
+      "details.config-advanced-disclosure",
+    );
     expect(disclosure?.open).toBe(true);
     disclosure!.open = false;
     disclosure!.dispatchEvent(new Event("toggle"));
@@ -578,7 +583,7 @@ describe("channel detail", () => {
         ["Last start", "n/a"],
         ["Last connection check", "n/a"],
       ]);
-      query<HTMLButtonElement>(container, probeButton)!.click();
+      container.querySelector<HTMLButtonElement>(probeButton)!.click();
       expect(onRefresh).toHaveBeenCalledWith(true);
     },
   );
@@ -607,7 +612,7 @@ describe("channel detail", () => {
         { [channelId]: { configured: true, running: true } },
         { loading: true, onRefresh },
       );
-      const probe = query<HTMLButtonElement>(container, probeButton);
+      const probe = container.querySelector<HTMLButtonElement>(probeButton);
 
       expect(probe?.disabled).toBe(true);
       expect(probe?.getAttribute("aria-busy")).toBe("true");

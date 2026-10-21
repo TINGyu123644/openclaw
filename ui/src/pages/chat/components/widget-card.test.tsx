@@ -86,7 +86,7 @@ function unmountWidget(host: HTMLElement) {
 function mountWidget(
   preview: PreviewState["preview"],
   options?: PreviewState["options"],
-  host = document.createElement("div"),
+  host: HTMLElement = document.createElement("div"),
 ) {
   const state = { preview, options };
   const mounted = widgets.get(host);

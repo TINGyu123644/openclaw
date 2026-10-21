@@ -10,12 +10,18 @@ export function registerRecentTranscriptTextSnapshotTests(params: {
   fixture: { storePath(): string };
   sessionId: string;
   sessionKey: string;
-  createFixtureTranscriptScope: () => Parameters<typeof persistSessionTranscriptTurn>[0];
+  createFixtureTranscriptScope: () => {
+    agentId: string;
+    sessionId: string;
+    sessionKey: string;
+    storePath: string;
+  };
   writeTranscriptStore: () => Promise<void>;
 }) {
   const { fixture, createFixtureTranscriptScope: scope, writeTranscriptStore } = params;
-  const read = (options: Partial<Parameters<typeof readRecent>[0]> = {}) =>
-    readRecent({ ...scope(), ...options });
+  const read = (
+    options: Omit<Parameters<typeof readRecent>[0], "agentId" | "sessionKey" | "storePath"> = {},
+  ) => readRecent({ ...scope(), ...options });
   it("reads recent context only from the active transcript branch", async () => {
     await writeTranscriptStore();
     const target = scope();

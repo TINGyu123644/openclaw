@@ -14,6 +14,7 @@ import { scanNodeHostedSkills } from "./skills.js";
 vi.mock("../infra/path-env.js", () => ({ ensureOpenClawCliOnPath: vi.fn() }));
 vi.mock("./mcp.js", () => ({ startNodeHostMcpManager: vi.fn() }));
 vi.mock("./skills.js", () => ({ scanNodeHostedSkills: vi.fn() }));
+// mock-isolation: command admission uses only this test's in-memory plugin registry.
 vi.mock("../plugins/loader.js", () => ({
   loadPluginRegistryHandle: () => plugins.getActivePluginRegistry(),
 }));
@@ -84,7 +85,15 @@ it("publishes only selected commands and rejects hidden invokes without starting
     for (const callback of Object.values(hidden)) {
       expect(callback).not.toHaveBeenCalled();
     }
-    for (const command of ["system.run", "computer.act", "worker.launch.v1", "fixture.read"]) {
+    for (const command of [
+      "system.run",
+      "computer.act",
+      "worker.launch.v1",
+      "fs.listDir",
+      "terminal.upload",
+      "mcp.tools.call.v1",
+      "fixture.read",
+    ]) {
       await connection.invoke({ id: command, nodeId: "node", command });
       expect(request).toHaveBeenLastCalledWith(
         "node.invoke.result",

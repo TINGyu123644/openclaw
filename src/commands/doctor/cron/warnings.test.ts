@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   runExec: vi.fn(),
 }));
 
+// mock-isolation: advisory tests use a fixed channel inventory without loading plugin runtimes.
 vi.mock("../../../channels/plugins/read-only.js", () => ({
   listReadOnlyChannelPluginsForConfig: mocks.plugins,
 }));

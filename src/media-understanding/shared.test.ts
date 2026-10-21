@@ -64,7 +64,9 @@ it.each([
     expect(release).toHaveBeenCalledExactlyOnceWith();
   },
 );
-beforeEach(() => usesProxy.mockReturnValue(false));
+beforeEach(() => {
+  usesProxy.mockReturnValue(false);
+});
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -401,13 +403,13 @@ describe("resolveProviderHttpRequestConfig", () => {
 });
 
 describe("fetchWithTimeoutGuarded", () => {
-  beforeEach(() =>
+  beforeEach(() => {
     guardedFetch.mockResolvedValue({
       response: new Response(),
       finalUrl: "https://example.com",
       release: async () => {},
-    }),
-  );
+    });
+  });
   it("truncates auditContext without leaving a lone surrogate at the max boundary", async () => {
     const prefix = "a".repeat(79);
     await fetchWithTimeoutGuarded("https://example.com", {}, 5000, fetch, {

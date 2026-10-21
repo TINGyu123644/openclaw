@@ -216,7 +216,7 @@ it.each(["agent deletion", "replacement", "watch disablement", "shutdown"] as co
   "joins transport retirement during %s",
   async (operation) => {
     const options = { finishOnAbort: false };
-    const { access, subscriptions, remoteParams, params } = await remoteFixture(options);
+    const { access, subscriptions, remoteParams, params, gateway } = await remoteFixture(options);
     const agentId = operation === "agent deletion" ? "worker" : undefined;
     if (agentId) {
       await refresh.ensureSkillsWatcher({ ...params, agentId });
