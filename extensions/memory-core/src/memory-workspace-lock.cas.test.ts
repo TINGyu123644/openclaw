@@ -1,20 +1,26 @@
-import type { PluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
-import { describe, expect, it, vi } from "vitest";
+import type {
+  PluginStateCompareResult,
+  PluginStateKeyedStore,
+} from "openclaw/plugin-sdk/plugin-state-runtime";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { deleteShortTermLockEntryIfCurrent } from "./memory-workspace-lock.js";
 import type { ShortTermLockEntry } from "./short-term-promotion-types.js";
 
+const state = vi.hoisted(() => ({ open: vi.fn() }));
 vi.mock("./dreaming-state.js", () => ({
+  SHORT_TERM_LOCK_MAX_ENTRIES: 4_096,
   SHORT_TERM_LOCK_NAMESPACE: "short-term-locks",
   memoryCoreStateReference: (namespace: string, workspace: string) => `${namespace}/${workspace}`,
   memoryCoreWorkspaceStateKey: (workspace: string) => workspace,
+  openMemoryCoreStateStore: state.open,
 }));
-const lockKey = "synthetic-workspace";
-const expected: ShortTermLockEntry = { owner: "synthetic-owner", acquiredAt: 1 };
-function createLockStore(replacement?: ShortTermLockEntry) {
-  const rows = new Map([[lockKey, structuredClone(expected)]]);
-  const unused = async () => {
-    throw new Error("Unexpected lock-store operation");
-  };
+vi.mock("openclaw/plugin-sdk/process-runtime", () => ({
+  getFileLockProcessStartTime: () => 123,
+  isPidDefinitelyDead: () => false,
+}));
+
+function createLockStore() {
+  const rows = new Map<string, ShortTermLockEntry>();
   const observation = (key: string) => ({
     value: structuredClone(rows.get(key)),
     comparison: JSON.stringify(rows.get(key)) ?? "missing",
@@ -23,7 +29,7 @@ function createLockStore(replacement?: ShortTermLockEntry) {
     observe: vi.fn(async (key: string) => observation(key)),
     compareAndApply: vi.fn<
       NonNullable<PluginStateKeyedStore<ShortTermLockEntry>["compareAndApply"]>
-    >(async (key, comparison, intent) => {
+    >(async (key, comparison, intent): Promise<PluginStateCompareResult<ShortTermLockEntry>> => {
       const current = observation(key);
       if (comparison !== current.comparison) {
         return { status: "conflict", current };
@@ -34,55 +40,86 @@ function createLockStore(replacement?: ShortTermLockEntry) {
       if (intent.action === "delete") {
         return { status: rows.delete(key) ? "applied" : "unchanged" };
       }
-      return unused();
+      rows.set(key, structuredClone(intent.value));
+      return { status: "applied" };
     }),
-    register: unused,
-    registerIfAbsent: unused,
+    async register(key: string, value: ShortTermLockEntry) {
+      rows.set(key, structuredClone(value));
+    },
+    async registerIfAbsent(key: string, value: ShortTermLockEntry) {
+      if (rows.has(key)) {
+        return false;
+      }
+      rows.set(key, structuredClone(value));
+      return true;
+    },
     async lookup(key: string) {
       return structuredClone(rows.get(key));
     },
-    consume: unused,
-    delete: unused,
-    entries: unused,
-    clear: unused,
+    async consume(key: string) {
+      const value = rows.get(key);
+      rows.delete(key);
+      return value;
+    },
+    async delete(key: string) {
+      return rows.delete(key);
+    },
+    async entries() {
+      return [...rows].map(([key, value]) => ({ key, value, createdAt: value.acquiredAt }));
+    },
+    async clear() {
+      rows.clear();
+    },
   } satisfies PluginStateKeyedStore<ShortTermLockEntry>;
-  if (replacement) {
-    const compare = store.compareAndApply.getMockImplementation()!;
-    store.compareAndApply.mockImplementationOnce(async (...args) => {
-      rows.set(lockKey, structuredClone(replacement));
-      return compare(...args);
-    });
-  }
+  state.open.mockReturnValue(store);
   return store;
 }
 
+afterEach(() => vi.clearAllMocks());
+
 describe("memory workspace lock comparisons", () => {
+  const key = "synthetic-workspace";
+  const expected: ShortTermLockEntry = { owner: "synthetic-owner", acquiredAt: 1 };
+
   it.each([
     { owner: "replacement-owner", acquiredAt: expected.acquiredAt },
     { owner: expected.owner, acquiredAt: expected.acquiredAt + 1 },
   ])("preserves a replacement lock after a comparison conflict: %j", async (replacement) => {
-    const store = createLockStore(replacement);
+    const store = createLockStore();
+    await store.register(key, expected);
+    const compare = store.compareAndApply.getMockImplementation()!;
+    store.compareAndApply.mockImplementationOnce(async (...args) => {
+      await store.register(key, replacement);
+      return await compare(...args);
+    });
 
-    await expect(deleteShortTermLockEntryIfCurrent(store, lockKey, expected)).resolves.toBe(false);
-    expect(await store.lookup(lockKey)).toEqual(replacement);
+    await expect(deleteShortTermLockEntryIfCurrent(store, key, expected)).resolves.toBe(false);
+    expect(await store.lookup(key)).toEqual(replacement);
   });
 
   it("retries a conflict while preserving the owner and acquisition-time predicate", async () => {
-    const store = createLockStore({ ...expected, ownerStartTime: 456 });
+    const store = createLockStore();
+    await store.register(key, expected);
+    const compare = store.compareAndApply.getMockImplementation()!;
+    store.compareAndApply.mockImplementationOnce(async (...args) => {
+      await store.register(key, { ...expected, ownerStartTime: 456 });
+      return await compare(...args);
+    });
 
-    await expect(deleteShortTermLockEntryIfCurrent(store, lockKey, expected)).resolves.toBe(true);
-    expect(await store.lookup(lockKey)).toBeUndefined();
+    await expect(deleteShortTermLockEntryIfCurrent(store, key, expected)).resolves.toBe(true);
+    expect(await store.lookup(key)).toBeUndefined();
   });
 
   it.each(["observe", "compareAndApply"] as const)(
     "requires %s before deletion",
     async (method) => {
       const store: PluginStateKeyedStore<ShortTermLockEntry> = createLockStore();
+      await store.register(key, expected);
       store[method] = undefined;
-      await expect(deleteShortTermLockEntryIfCurrent(store, lockKey, expected)).rejects.toThrow(
+      await expect(deleteShortTermLockEntryIfCurrent(store, key, expected)).rejects.toThrow(
         "memory-core short-term lock store requires atomic comparisons",
       );
-      expect(await store.lookup(lockKey)).toEqual(expected);
+      expect(await store.lookup(key)).toEqual(expected);
     },
   );
 });

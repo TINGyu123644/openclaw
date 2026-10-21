@@ -11,10 +11,10 @@ vi.mock("../daemon/systemd-exec.js", () => ({
   execSystemctlUser: execUser,
   execSystemctl: execSystem,
 }));
-// Preserve the restart-owned resolver without loading unrelated runtime owners.
+// Preserve the restart-owned unit-name resolver without loading unrelated runtime owners.
 vi.mock("./restart.js", async (original) => {
-  const { normalizeSystemdUnit } = await original<typeof import("./restart.js")>();
-  return { normalizeSystemdUnit };
+  const actual = await original<typeof import("./restart.js")>();
+  return { normalizeSystemdUnit: actual.normalizeSystemdUnit };
 });
 const loaded = (timeout: string, invocation = "own") => ({
   code: 0,

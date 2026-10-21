@@ -21,8 +21,14 @@ vi.mock("./stale-plugin-config.js", () => ({
   isStalePluginAutoRepairBlocked: () => false,
 }));
 
-vi.mock("./codex-route-warnings.js", () => ({ collectCodexRouteWarnings: () => [] }));
-vi.mock("./codex-native-assets.js", () => ({ collectCodexNativeAssetInfoNotes: async () => [] }));
+vi.mock("./codex-route-warnings.js", () => ({
+  collectCodexRouteWarnings: () => [],
+}));
+
+vi.mock("./codex-native-assets.js", () => ({
+  collectCodexNativeAssetInfoNotes: async () => [],
+}));
+
 vi.mock("./context-engine-host-compat.js", () => ({
   collectContextEngineHostCompatibilityWarnings: async () => [],
 }));
@@ -34,13 +40,16 @@ vi.mock("../../../state/user-profiles-owner-migration.js", () => ({
 vi.mock("./bundled-plugin-load-paths.js", () => ({
   scanBundledPluginLoadPathMigrations: (cfg: { plugins?: { load?: { paths?: string[] } } }) =>
     (cfg.plugins?.load?.paths ?? []).map((legacyPath) => ({ legacyPath })),
-  collectBundledPluginLoadPathWarnings: (params: {
+  collectBundledPluginLoadPathWarnings: ({
+    doctorFixCommand,
+    hits,
+  }: {
     doctorFixCommand: string;
     hits: Array<{ legacyPath: string }>;
   }) =>
-    params.hits.map(
+    hits.map(
       (hit) =>
-        `plugins.load.paths: legacy bundled plugin path "${hit.legacyPath}". Run "${params.doctorFixCommand}".`,
+        `plugins.load.paths: legacy bundled plugin path "${hit.legacyPath}". Run "${doctorFixCommand}".`,
     ),
 }));
 
