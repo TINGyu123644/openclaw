@@ -45,7 +45,6 @@ describe("health failure diagnostic redaction", () => {
 
   it.each([false, true])("keeps built-in and custom masking with rich=%s", (rich) => {
     vi.spyOn(loggingConfig, "readLoggingConfig").mockReturnValue({
-      redactSensitive: "off",
       redactPatterns: ["deploymentMask9X"],
     });
     const output = stripAnsi(
