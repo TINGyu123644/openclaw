@@ -71,10 +71,10 @@ function canonicalOwner(jobs: CompactNodeTestShard[], shardName: string) {
   };
 }
 
-function expectSameFields<Actual, Expected, Key extends keyof Actual & keyof Expected>(
+function expectSameFields<Actual, Expected>(
   actual: Actual,
   expected: Expected,
-  keys: readonly Key[],
+  keys: readonly (keyof Actual & keyof Expected)[],
 ) {
   for (const key of keys) {
     expect(actual[key], String(key)).toEqual(expected[key]);
