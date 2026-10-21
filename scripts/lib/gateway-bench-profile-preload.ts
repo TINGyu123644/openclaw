@@ -2,8 +2,9 @@ import { readFileSync, realpathSync, writeFileSync, writeSync } from "node:fs";
 import { Session } from "node:inspector/promises";
 import { availableParallelism } from "node:os";
 import { fileURLToPath } from "node:url";
-import { queryObjects, writeHeapSnapshot } from "node:v8";
+import { getHeapSpaceStatistics, queryObjects, writeHeapSnapshot } from "node:v8";
 import { isMainThread } from "node:worker_threads";
+import { sampleTrackedWorkerMemory } from "../../src/infra/worker-cpu.ts";
 import { getWorkerMessageMetrics } from "../../src/infra/worker-message-metrics.ts";
 import { startGatewayBenchDiagnostics } from "./gateway-bench-diagnostics.ts";
 import {
@@ -42,6 +43,8 @@ function sampleResources(): GatewayResourceSnapshot {
   return {
     ...sampleCpu(),
     memory: process.memoryUsage(),
+    heapSpaces: getHeapSpaceStatistics(),
+    workers: sampleTrackedWorkerMemory(),
     // These resource types keep the event loop alive; they are not ownership IDs.
     activeResources: Object.fromEntries(
       [...counts].toSorted(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
