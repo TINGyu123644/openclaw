@@ -38,7 +38,7 @@ describe("status-all format", () => {
       ['secret="synthetic\nsecret" next', "secret=*** next"],
       ["token=synthetic\u001b[31msecret next", "token=*** next"],
       ["ordinary status message", "ordinary status message"],
-    ]) {
+    ] as const) {
       expect(redactStatusSecrets(input)).toBe(expected);
     }
   });
