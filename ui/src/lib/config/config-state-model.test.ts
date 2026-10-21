@@ -5,7 +5,11 @@ import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { ConfigSchemaResponse, ConfigSnapshot } from "../../api/types.ts";
 import { canReloadControlUiDocument } from "../../app/document-reload-guard.ts";
 import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
-import { currentConfigObject, resolveAgentConfigEntryTarget } from "./config-state-model.ts";
+import {
+  currentConfigObject,
+  currentDisplayRuntimeConfig,
+  resolveAgentConfigEntryTarget,
+} from "./config-state-model.ts";
 import {
   CONFIG_FORM_AUTO_SAVE_DEBOUNCE_MS,
   createGatewayHarness,
@@ -51,6 +55,7 @@ describe("config state model", () => {
     try {
       await runtimeConfig.ensureLoaded();
       expect(currentConfigObject(runtimeConfig.state)).toEqual({ count: 1 });
+      expect(currentDisplayRuntimeConfig(runtimeConfig.state)).toEqual({ count: 1 });
       server.request.mockRejectedValueOnce(new Error("New connection read failed"));
       const currentClient = createTestGatewayClient(server.request);
       publish(false);
@@ -59,6 +64,7 @@ describe("config state model", () => {
 
       expect(runtimeConfig.state.lastError).toBe("New connection read failed");
       expect(currentConfigObject(runtimeConfig.state)).toBeNull();
+      expect(currentDisplayRuntimeConfig(runtimeConfig.state)).toBeNull();
       await runtimeConfig.ensureLoaded();
       expect(currentConfigObject(runtimeConfig.state)).toBeNull();
       expect(server.request.mock.calls).toHaveLength(2);

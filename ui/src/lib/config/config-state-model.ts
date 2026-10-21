@@ -212,11 +212,8 @@ export function currentDisplayConfig(state: RuntimeConfigState): Record<string, 
 export function currentDisplayRuntimeConfig(
   state: RuntimeConfigState,
 ): Record<string, unknown> | null {
-  return (
-    (!staleConfigSnapshots.has(state) ? state.configSnapshot?.runtimeConfig : null) ??
-    state.bootstrapConfig ??
-    null
-  );
+  const snapshot = !staleConfigSnapshots.has(state) ? state.configSnapshot : null;
+  return snapshot?.runtimeConfig ?? snapshot?.config ?? state.bootstrapConfig ?? null;
 }
 export type AgentConfigEntryTarget = {
   path: ["agents", "entries", string];
