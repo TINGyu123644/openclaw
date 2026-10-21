@@ -22,7 +22,12 @@ import { formatPluginCompatibilityNotice } from "../plugins/status-compatibility
 import type { PluginCompatibilityNotice } from "../plugins/status.js";
 import type { MemoryPluginStatus } from "../status/memory-plugin.js";
 import type { StatusSummary } from "../status/summary.js";
-import { formatDeliveryQueueHealthLine, formatHealthChannelLines } from "./health-format.js";
+import {
+  formatConfigReloadHealthLine,
+  formatContextEngineHealthLine,
+  formatDeliveryQueueHealthLine,
+  formatHealthChannelLines,
+} from "./health-format.js";
 import type { HealthSummary } from "./health.js";
 import { formatSqliteWalHealthWarning } from "./sqlite-wal-health.js";
 import type { AgentLocalStatus } from "./status.agent-local.js";
@@ -248,11 +253,15 @@ export function buildStatusHealthRows(params: {
       Detail: formatEventLoopHealthDetail(params.health.eventLoop),
     });
   }
-  const healthLines = formatHealthChannelLines(params.health, { accountMode: "all" });
-  const deliveryQueueLine = formatDeliveryQueueHealthLine(params.health);
-  if (deliveryQueueLine) {
-    healthLines.push(deliveryQueueLine);
-  }
+  const warningLines = [
+    formatContextEngineHealthLine(params.health),
+    formatDeliveryQueueHealthLine(params.health),
+    formatConfigReloadHealthLine(params.health),
+  ].filter((line): line is string => line !== null);
+  const healthLines = [
+    ...formatHealthChannelLines(params.health, { accountMode: "all" }),
+    ...warningLines,
+  ];
   for (const line of healthLines) {
     const colon = line.indexOf(":");
     if (colon === -1) {
@@ -261,9 +270,12 @@ export function buildStatusHealthRows(params: {
     const item = line.slice(0, colon).trim();
     const detail = line.slice(colon + 1).trim();
     const normalized = normalizeLowercaseStringOrEmpty(detail);
-    // Shared health text uses known prefixes to classify table status chips.
-    const status =
-      normalized === "healthy" || normalized.startsWith("ok") || normalized.startsWith("configured")
+    // Auxiliary failures warn; intentionally disabled channel accounts remain OFF.
+    const status = warningLines.includes(line)
+      ? theme.warn("WARN")
+      : normalized === "healthy" ||
+          normalized.startsWith("ok") ||
+          normalized.startsWith("configured")
         ? theme.success("OK")
         : normalized.startsWith("not configured") || normalized.startsWith("disabled")
           ? theme.muted("OFF")
