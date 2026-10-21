@@ -27,11 +27,11 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
         (error: unknown) => ({ error }),
       );
       await closeOpenClawStateDatabaseByPathAsync(databasePath);
-      expect(await getCanonicalUserPreferences(profile.id)).toEqual({
-        profileId: profile.id,
-        entries,
+      const persisted = await getCanonicalUserPreferences(profile.id);
+      expect({ outcome, persisted }).toEqual({
+        outcome: { value: { ok: true, value: { profileId: profile.id } } },
+        persisted: { profileId: profile.id, entries },
       });
-      expect(outcome).toEqual({ value: { ok: true, value: { profileId: profile.id } } });
     });
   },
 );
