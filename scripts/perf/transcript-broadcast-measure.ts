@@ -57,6 +57,9 @@ const { values } = parseArgs({
     "state-dir": { type: "string" },
     allocations: { type: "boolean", default: false },
     diagnostics: { type: "boolean", default: false },
+    "transport-counts": { type: "boolean", default: false },
+    compressed: { type: "boolean", default: false },
+    "distinct-viewers": { type: "boolean", default: false },
     "prep-trace": { type: "boolean", default: false },
     "cpu-profile": { type: "boolean", default: false },
     "workload-cpu-profile": { type: "boolean", default: false },
@@ -159,6 +162,15 @@ if (values["seed-history"] && !historyTurns) {
 }
 if ((historyLastTurns || historyPayloadBytes) && !historyTurns) {
   throw new Error("--history-last-turns and --history-payload-kib require --history-turns");
+}
+const proxyViewers = values.compressed || values["distinct-viewers"];
+if (proxyViewers && values["operator-access-policy"]) {
+  throw new Error("--compressed/--distinct-viewers cannot combine with --operator-access-policy");
+}
+if (proxyViewers && (scenario !== "transcript-broadcast" || values["mixed-rpc"])) {
+  throw new Error(
+    "--compressed/--distinct-viewers require transcript-broadcast without --mixed-rpc",
+  );
 }
 const reasoningScenario = retentionScenario || idleScenario || soakScenario;
 if (
@@ -316,6 +328,20 @@ if (values["stream-start-allocations"] && (!turnScenario || values.allocations))
 if (values["poll-seed"] !== undefined && !listIntervalMs) {
   throw new Error("--poll-seed requires --list-interval-ms");
 }
+if (
+  values["transport-counts"] &&
+  (values.allocations ||
+    values.diagnostics ||
+    values["cpu-profile"] ||
+    values["workload-cpu-profile"] ||
+    values["stream-start-allocations"] ||
+    values["stream-start-diagnostics"] ||
+    values["active-work-diagnostics"] ||
+    values["trace-gc"] ||
+    soakScenario)
+) {
+  throw new Error("--transport-counts needs a separate pass without profiling or diagnostics");
+}
 const recordListRequests =
   values.diagnostics ||
   values["stream-start-diagnostics"] ||
@@ -362,8 +388,38 @@ if (values["stress-tools"] || values["mixed-rpc"]) {
     diffControlOriginal = readFileSync(path.join(stressWorktree, "README.md"), "utf8");
   }
 }
+const viewerOrigin = "https://broadcast-measure.example.invalid";
+const viewerIdentity = (index: number) =>
+  `broadcast-viewer-${values["distinct-viewers"] ? index : 0}@example.invalid`;
+const viewerProfiles = new Set<string>();
 const cfg = JSON.parse(readFileSync(path.join(root, "openclaw.json"), "utf8"));
 applyMockOpenAiModelConfig(cfg, { mockPort, modelRef: "openai/gpt-4.1" });
+if (proxyViewers) {
+  const identities = Array.from(
+    { length: values["distinct-viewers"] ? clientCount : 1 },
+    (_, index) => viewerIdentity(index),
+  );
+  const scopes = ["operator.admin", "operator.read", "operator.write"];
+  cfg.gateway = {
+    ...cfg.gateway,
+    auth: {
+      mode: "trusted-proxy",
+      trustedProxy: {
+        userHeader: "x-forwarded-user",
+        requiredHeaders: ["x-forwarded-proto"],
+        allowUsers: identities,
+        allowLoopback: true,
+      },
+      identityScopes: Object.fromEntries(identities.map((identity) => [identity, scopes])),
+    },
+    trustedProxies: ["127.0.0.1", "::1"],
+    controlUi: { enabled: false, allowedOrigins: [viewerOrigin] },
+    roles: {
+      default: "administrator",
+      definitions: { administrator: { agents: "*", sessions: { others: "write" }, scopes } },
+    },
+  };
+}
 cfg.agents.defaults = {
   ...cfg.agents.defaults,
   maxConcurrent: runCount,
@@ -1073,6 +1129,7 @@ const mock = createServer((req, res) => {
 });
 const children: ChildProcess[] = [];
 const clients: ReturnType<typeof createGatewayWsClient>[] = [];
+const chatDeltaDeliveryMs: number[] = [];
 const expectedClosures = new WeakSet<ReturnType<typeof createGatewayWsClient>>();
 const responseFrameBytes = new WeakMap<
   ReturnType<typeof createGatewayWsClient>,
@@ -1431,11 +1488,11 @@ const connectParams = {
   minProtocol: PROTOCOL_VERSION,
   maxProtocol: PROTOCOL_VERSION,
   client: {
-    id: values["operator-access-policy"] ? "openclaw-control-ui" : "gateway-client",
+    id: proxyViewers || values["operator-access-policy"] ? "openclaw-control-ui" : "gateway-client",
     displayName: "synthetic-broadcast-measurement",
     version: "1.0.0",
     platform: process.platform,
-    mode: values["operator-access-policy"] ? "webchat" : "backend",
+    mode: proxyViewers ? "ui" : values["operator-access-policy"] ? "webchat" : "backend",
   },
   role: "operator",
   scopes: ["operator.read", "operator.admin"],
@@ -2176,13 +2233,14 @@ async function connectClient(index: number) {
   let receivedFrameBytes = 0;
   const client = createGatewayWsClient({
     url: `ws://127.0.0.1:${port}`,
-    ...(values["operator-access-policy"]
+    ...(proxyViewers || values["operator-access-policy"]
       ? {
-          origin: authorityOrigin,
+          origin: proxyViewers ? viewerOrigin : authorityOrigin,
           headers: {
-            "x-forwarded-user": authorityEmail,
-            "x-forwarded-proto": "https",
             "x-forwarded-for": "203.0.113.50",
+            "x-forwarded-proto": "https",
+            ...(proxyViewers ? { "x-forwarded-host": "broadcast-measure.example.invalid" } : {}),
+            "x-forwarded-user": proxyViewers ? viewerIdentity(index) : authorityEmail,
           },
         }
       : {}),
@@ -2227,6 +2285,14 @@ async function connectClient(index: number) {
         }
       }
       if (measuring) {
+        if (
+          event.event === "chat" &&
+          payload?.state === "delta" &&
+          isRecord(payload.message) &&
+          typeof payload.message.timestamp === "number"
+        ) {
+          chatDeltaDeliveryMs.push(epochNow() - payload.message.timestamp);
+        }
         counters.set(event.event, (counters.get(event.event) ?? 0) + 1);
         clientCounters.set(event.event, (clientCounters.get(event.event) ?? 0) + 1);
         eventBytes.set(event.event, (eventBytes.get(event.event) ?? 0) + receivedFrameBytes);
@@ -2287,6 +2353,30 @@ async function connectClient(index: number) {
   ) {
     throw new Error("connect did not return a valid hello snapshot");
   }
+  if (client.ws.extensions.includes("permessage-deflate") !== proxyViewers) {
+    throw new Error("Gateway compression negotiation did not match the requested ingress");
+  }
+  if (proxyViewers) {
+    if (hello.auth.method !== "trusted-proxy") {
+      throw new Error("Synthetic viewer did not authenticate through the trusted proxy");
+    }
+    const self = await rpc(client, "users.self", {});
+    if (
+      !isRecord(self) ||
+      !isRecord(self.profile) ||
+      typeof self.profile.id !== "string" ||
+      !self.profile.id
+    ) {
+      throw new Error("Synthetic viewer did not acquire a user profile");
+    }
+    viewerProfiles.add(self.profile.id);
+    const expectedProfiles = values["distinct-viewers"] ? index + 1 : 1;
+    if (viewerProfiles.size !== expectedProfiles) {
+      throw new Error(
+        "Synthetic viewer profile identities did not match the requested cardinality",
+      );
+    }
+  }
   if (measuring) {
     handshakeLatenciesMs.push(handshakeElapsedMs);
   }
@@ -2341,26 +2431,32 @@ try {
     mock.listen(mockPort, "127.0.0.1", resolve);
   });
   await ready(mockPort, "/health");
+  const gatewayArgs = buildGatewayBenchChildArgs(
+    values.entry,
+    port,
+    [
+      ...(values.allocations || values["stream-start-allocations"] || values["trace-gc"]
+        ? ["--trace-gc-nvp"]
+        : []),
+      "--import",
+      "./scripts/tsx.mjs",
+      "--import",
+      "./scripts/lib/gateway-bench-profile-preload.ts",
+      ...(values["transport-counts"]
+        ? ["--import", "./scripts/lib/gateway-bench-transport-preload.ts"]
+        : []),
+      ...(values["worker-memory"] || values["baseline-owners"]
+        ? ["--import", "./scripts/perf/transcript-worker-memory-preload.ts"]
+        : []),
+    ],
+    proxyViewers || values["operator-access-policy"] ? "trusted-proxy" : "none",
+  );
   gateway = launch(
-    buildGatewayBenchChildArgs(
-      values.entry,
-      port,
-      [
-        ...(values.allocations || values["stream-start-allocations"] || values["trace-gc"]
-          ? ["--trace-gc-nvp"]
-          : []),
-        "--import",
-        "./scripts/tsx.mjs",
-        "--import",
-        "./scripts/lib/gateway-bench-profile-preload.ts",
-        ...(values["worker-memory"] || values["baseline-owners"]
-          ? ["--import", "./scripts/perf/transcript-worker-memory-preload.ts"]
-          : []),
-      ],
-      values["operator-access-policy"] ? "trusted-proxy" : "none",
-    ),
+    gatewayArgs,
     "gateway",
-    {},
+    values["transport-counts"]
+      ? { OPENCLAW_BENCH_TRANSPORT_COUNTS_PATH: path.join(output, "transport-counts.json") }
+      : {},
     true,
   );
   await ready(port, "/readyz", gateway);
@@ -2745,6 +2841,7 @@ try {
       retainedProfileStartedAt = Date.now();
     }
     counters.clear();
+    chatDeltaDeliveryMs.length = 0;
     rpcMeasurements.clear();
     handshakeLatenciesMs.length = 0;
     reconnectStorms.length = 0;
@@ -2769,9 +2866,10 @@ try {
     recapReceipts.length = 0;
     recapPhase = undefined;
     activeWorkCounts = undefined;
-    const finishGatewayDiagnostics = values.diagnostics
-      ? await startGatewayDiagnostics(gateway)
-      : undefined;
+    const finishGatewayDiagnostics =
+      values.diagnostics || values["transport-counts"]
+        ? await startGatewayDiagnostics(gateway)
+        : undefined;
     const finishControllerDiagnostics = values.diagnostics
       ? startGatewayBenchDiagnostics()
       : undefined;
@@ -3143,6 +3241,14 @@ try {
           }
         : {}),
       ...cpu,
+      chatDeltaDeliveryMs: summarizeLatencies([...chatDeltaDeliveryMs]),
+      ...(values["transport-counts"]
+        ? {
+            transportCounts: JSON.parse(
+              readFileSync(path.join(output, "transport-counts.json"), "utf8"),
+            ),
+          }
+        : {}),
       eventCounts: Object.fromEntries(counters),
       eventBytes: Object.fromEntries(eventBytes),
       sessionEventSizes: Object.fromEntries(sessionEventSizes),
@@ -3401,6 +3507,10 @@ try {
     ...(values["mixed-rpc"] ? { diffEditControlVerified: true, diffEditVisibilityMs } : {}),
     pollSeed: values["poll-seed"] ?? null,
     diagnostics: values.diagnostics,
+    transportCounts: values["transport-counts"],
+    compressed: proxyViewers,
+    distinctViewers: values["distinct-viewers"],
+    viewerProfileCount: viewerProfiles.size,
     cpuProfile: values["cpu-profile"],
     workloadCpuProfile: values["workload-cpu-profile"],
     captureResponses: values["capture-responses"],

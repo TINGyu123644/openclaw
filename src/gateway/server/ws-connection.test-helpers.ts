@@ -7,6 +7,7 @@ import { expect, vi } from "vitest";
 import type { WebSocketServer } from "ws";
 import type { ResolvedGatewayAuth } from "../auth.js";
 import { prepareGatewayIngressAttribution } from "../ingress-attribution.js";
+import type { SerializedGatewayFrame } from "../serialized-json.js";
 import { GatewayConnectionWork } from "../server-connection-work.js";
 import { MAX_PREAUTH_PAYLOAD_BYTES } from "../server-constants.js";
 import { GatewayClientRegistry } from "./client-registry.js";
@@ -67,7 +68,7 @@ export function createGatewayWsTestSocket(
     bufferedAmount: 0,
     send: vi.fn(
       (
-        data: string | Buffer,
+        data: string | Buffer | SerializedGatewayFrame,
         options?: { binary: false } | ((err?: Error) => void),
         cb?: (err?: Error) => void,
       ) => {
