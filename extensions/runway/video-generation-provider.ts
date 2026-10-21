@@ -12,6 +12,7 @@ import {
   readProviderJsonObjectResponse,
   resolveProviderOperationTimeoutMs,
   resolveProviderApiKeyHttpRequestConfig,
+  sanitizeConfiguredModelProviderRequest,
 } from "openclaw/plugin-sdk/provider-http";
 import {
   isRecord,
@@ -253,6 +254,9 @@ export function buildRunwayVideoGenerationProvider(): VideoGenerationProvider {
           missingApiKeyMessage: "Runway API key missing",
           baseUrl: req.cfg?.models?.providers?.runway?.baseUrl,
           defaultBaseUrl: DEFAULT_RUNWAY_BASE_URL,
+          request: sanitizeConfiguredModelProviderRequest(
+            req.cfg?.models?.providers?.runway?.request,
+          ),
           defaultHeaders: {
             "X-Runway-Version": RUNWAY_API_VERSION,
           },
