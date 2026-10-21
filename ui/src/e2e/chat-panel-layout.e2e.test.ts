@@ -201,9 +201,11 @@ suite.define(() => {
         const input = widgetInput(page);
         await input.fill("Keep the release note while discussing changes");
         const identity = await documentIdentity(input);
-        const panels = page.locator(".chat-pane__panels-toggle");
-        await panels.waitFor();
+        const panels = page
+          .locator(".sidebar-region__panels-toggle")
+          .getByRole("button", { name: "Panels", exact: true });
         const composer = page.locator(".agent-chat__composer-combobox textarea");
+        await panels.waitFor();
         expect(await panels.getAttribute("aria-expanded")).toBe("false");
         await expect.poll(() => composer.isVisible()).toBe(false);
         // Details is session context, not a shortcut that reveals the transcript.
@@ -227,6 +229,7 @@ suite.define(() => {
         await panels.click();
         await composer.waitFor({ state: "hidden" });
         await panels.click();
+        await composer.waitFor();
         expect(await composer.inputValue()).toBe("Let's review the eight remaining changes.");
         // The mobile dock keeps the conversation available and retains the saved desktop layout.
         await page.setViewportSize({ width: 390, height: 844 });
