@@ -3,7 +3,7 @@ import { expect, it } from "vitest";
 import type { ChatDetailsProps } from "./chat-details-types.ts";
 import { mountChatPaneHeader } from "./chat-pane-header.test-support.ts";
 
-it("prepares Details facts once per header projection", () => {
+it("keeps transcript facts lazy while Details are closed", () => {
   let reads = 0;
   const chat = (sessionKey: string): ChatDetailsProps => ({
     sessionKey,
@@ -26,9 +26,9 @@ it("prepares Details facts once per header projection", () => {
   const view = mountChatPaneHeader(containers, { detailsControl });
   try {
     expect(view.container.querySelector("openclaw-chat-details")).not.toBeNull();
-    expect(reads).toBe(1);
+    expect(reads).toBe(0);
     view.update({ detailsControl: { ...detailsControl, chat: chat("agent:main:second") } });
-    expect(reads).toBe(2);
+    expect(reads).toBe(0);
   } finally {
     view.unmount();
     containers.forEach((container) => container.remove());
