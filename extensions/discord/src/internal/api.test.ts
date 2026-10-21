@@ -37,7 +37,7 @@ describe("Discord REST API helpers", () => {
         path: Routes.threads("c1", messageId),
         data: { body: { name: "thread" } },
       },
-      { method: "PUT", path: Routes.channelPin("c1", messageId) },
+      { method: "PUT", path: Routes.channelMessagesPin("c1", messageId) },
       { method: "DELETE", path: Routes.channelMessage("c1", messageId) },
     ]);
   });
