@@ -229,11 +229,12 @@ export async function listPinsDiscord(
   const messages: APIMessage[] = [];
   let before: string | undefined;
   while (true) {
-    // SAFETY: Discord's current pin endpoint returns items and has_more.
-    const page = (await rest.get(Routes.channelMessagesPins(channelId), {
+    const response = await rest.get(Routes.channelMessagesPins(channelId), {
       limit: 50,
       ...(before ? { before } : {}),
-    })) as RESTGetAPIChannelMessagesPinsResult;
+    });
+    // SAFETY: Discord's current pin endpoint returns items and has_more.
+    const page = response as RESTGetAPIChannelMessagesPinsResult;
     messages.push(...page.items.map((pin) => pin.message));
     if (!page.has_more) {
       return messages;
