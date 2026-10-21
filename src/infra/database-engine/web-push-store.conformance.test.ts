@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
+import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { listWebPushSubscriptionsInDatabase } from "../push-web-store.database.worker.js";
 import {
   hashWebPushEndpoint,
@@ -7,6 +8,7 @@ import {
   upsertWebPushSubscription,
 } from "../push-web-store.js";
 import { isPostgresSqlConnection } from "../sql-connection.js";
+import { runWithSqliteWorkerStateContext } from "../sqlite-worker-state-context.js";
 import { withEngineStoreAdmission as admit } from "./admission-scope.js";
 import { mixedAgentConnection, useMixedAgentPair } from "./mixed-agent.conformance.test-support.js";
 
@@ -49,7 +51,11 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
           }),
         );
         try {
-          expect(admit(() => listWebPushSubscriptionsInDatabase(database))).toEqual([expected]);
+          expect(
+            runWithSqliteWorkerStateContext(captureOpenClawStateWorkerContext({}), () =>
+              admit(() => listWebPushSubscriptionsInDatabase(database)),
+            ),
+          ).toEqual([expected]);
           expect(
             statements.filter((sql) => /\b(?:BEGIN|COMMIT|pg_advisory_xact_lock)\b/iu.test(sql)),
           ).toEqual([]);
