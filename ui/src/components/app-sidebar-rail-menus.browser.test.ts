@@ -16,7 +16,10 @@ afterEach(() => document.body.replaceChildren());
 describe.runIf("__vitest_browser__" in globalThis)("navigation rail menus", () => {
   it("opens all three menus beside the rail and restores their real trigger on Escape", async () => {
     await import("./app-sidebar.tsx");
-    await vi.importActual("./sidebar-attention.tsx");
+    // Browser shards share the registry even when the sidebar helper mocks this module.
+    if (!customElements.get("openclaw-sidebar-attention")) {
+      await vi.importActual("./sidebar-attention.tsx");
+    }
     const { page, userEvent } = await import("vitest/browser");
     const viewport = { width: window.innerWidth, height: window.innerHeight };
     onTestFinished(() => page.viewport(viewport.width, viewport.height));
