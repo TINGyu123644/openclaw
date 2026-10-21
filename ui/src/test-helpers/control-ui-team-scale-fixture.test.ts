@@ -34,6 +34,11 @@ describe("Team-scale Gateway fixture", () => {
       config: { tts: { maxTextLength: 4096 } },
     });
     expect(scenario.bootstrapPreferences?.config).not.toHaveProperty("models");
+    expect(scenario.methodResponses?.["config.get"]).toMatchObject({
+      hash: "synthetic-config-v1",
+      configRevisionHash: "synthetic-config-v1",
+      appliedConfigHash: "synthetic-config-v1",
+    });
     const bytes = Buffer.byteLength(JSON.stringify(scenario.methodResponses?.["config.get"]));
     expect(bytes).toBeGreaterThanOrEqual(152_000);
     expect(bytes).toBeLessThanOrEqual(169_000);

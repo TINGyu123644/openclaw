@@ -64,8 +64,8 @@ export function createTeamScaleConfig() {
     resolved: config,
     runtimeConfig: config,
     hash: "synthetic-config-v1",
-    configRevisionHash: "synthetic-runtime-v1",
-    appliedConfigHash: "synthetic-runtime-v1",
+    configRevisionHash: "synthetic-config-v1",
+    appliedConfigHash: "synthetic-config-v1",
     issues: [],
   };
   return { display, snapshot };
