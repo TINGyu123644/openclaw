@@ -16,7 +16,7 @@ it("includes only the viewer's presentation data and redacts MCP credentials", a
     tts: {
       provider: "openai",
       maxTextLength: 1234,
-      openai: { apiKey: "synthetic-speech-secret" },
+      providers: { openai: { apiKey: "synthetic-speech-secret" } },
     },
     models: {
       providers: {
