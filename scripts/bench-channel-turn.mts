@@ -1,11 +1,21 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createWriteStream, mkdirSync, mkdtempSync, writeFileSync, renameSync } from "node:fs";
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+  renameSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { parseArgs } from "node:util";
 import { startQaBusServer, createQaBusState } from "../extensions/qa-lab/bus-api.ts";
+import type { AnyAgentTool } from "../src/agents/agent-tools.types.js";
+import type { ToolHandlerContext } from "../src/agents/embedded-agent-subscribe.handlers.types.js";
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
 import { applyMockOpenAiModelConfig } from "./e2e/lib/fixtures/mock-openai-config.mjs";
 import { stopChild } from "./lib/gateway-bench-child.ts";
@@ -21,12 +31,22 @@ const { values } = parseArgs({
   options: {
     entry: { type: "string", default: "dist/entry.js" },
     help: { type: "boolean", short: "h" },
+    "tool-invocations": { type: "boolean", default: false },
+    "tool-argument-bytes": { type: "string", default: "65536" },
+    "tool-progress-events": { type: "string", default: "500" },
+    "tool-calls": { type: "string", default: "20" },
+    "tool-samples": { type: "string", default: "5" },
+    "tool-start-file": { type: "string" },
   },
 });
 if (values.help) {
   console.log(
-    "Usage: node --import ./scripts/tsx.mjs scripts/bench-channel-turn.mts [--entry dist/entry.js]\nRuns one cold and ten warmed QA-channel turns with an isolated local mock provider.",
+    "Usage: node --import ./scripts/tsx.mjs scripts/bench-channel-turn.mts [--entry dist/entry.js]\nRuns one cold and ten warmed QA-channel turns with an isolated local mock provider.\nOr use --tool-invocations [--tool-argument-bytes 65536] [--tool-progress-events 500] [--tool-calls 20] [--tool-samples 5] with --expose-gc for real tool-owner allocation/clone measurements without a Gateway.",
   );
+  process.exit(0);
+}
+if (values["tool-invocations"]) {
+  await measureToolInvocations();
   process.exit(0);
 }
 const output = mkdtempSync(path.join(tmpdir(), "sqlmeasure-channel-"));
@@ -307,4 +327,323 @@ try {
   await cleanup();
   process.off("SIGINT", onSigint);
   process.off("SIGTERM", onSigterm);
+}
+
+/** Measures custody and progress through the real wrapper, harness and subscription handler. */
+async function measureToolInvocations() {
+  const integerOption = (
+    name: "tool-argument-bytes" | "tool-progress-events" | "tool-calls" | "tool-samples",
+    minimum = 1,
+  ) => {
+    const value = Number(values[name]);
+    if (!Number.isSafeInteger(value) || value < minimum) {
+      throw new Error(`--${name} must be an integer >= ${minimum}`);
+    }
+    return value;
+  };
+  const argumentBytes = integerOption("tool-argument-bytes");
+  const progressEvents = integerOption("tool-progress-events", 0);
+  const calls = integerOption("tool-calls");
+  const sampleCount = integerOption("tool-samples");
+  if (!globalThis.gc) {
+    throw new Error("--tool-invocations requires node --expose-gc");
+  }
+  // Source imports and fixture construction are deliberately outside all sampling windows.
+  const [
+    { Session },
+    { Type },
+    { isRecord },
+    { wrapToolWithBeforeToolCallHook },
+    { finalizeToolTerminalPresentation },
+    { peekAdjustedParamsForToolCall },
+    { createAgentHarnessToolExecutionBoundaryRegistry },
+    { runAgentHarnessToolInvocation },
+    { handleToolExecutionUpdate },
+    { EmbeddedAgentSubscribeState },
+    { createToolTerminalObserver },
+    { setToolTerminalPresentation },
+  ] = await Promise.all([
+    import("node:inspector/promises"),
+    import("typebox"),
+    import("@openclaw/normalization-core/record-coerce"),
+    import("../src/agents/agent-tools.before-tool-call.wrapper.js"),
+    import("../src/agents/agent-tools.before-tool-call.diagnostics.js"),
+    import("../src/agents/agent-tools.before-tool-call.state.js"),
+    import("../src/agents/harness/tool-execution.js"),
+    import("../src/agents/harness/tool-invocation.js"),
+    import("../src/agents/embedded-agent-subscribe.handlers.tools.progress.js"),
+    import("../src/agents/embedded-agent-subscribe.run-state.js"),
+    import("../src/agents/tool-terminal-outcome.js"),
+    import("../src/agents/tool-terminal-presentation.js"),
+  ]);
+  const toolOutput = mkdtempSync(path.join(tmpdir(), "tool-invocations-"));
+  const runId = `tool-invocation-benchmark-${process.pid}`;
+  const boundaries = createAgentHarnessToolExecutionBoundaryRegistry();
+  const observeTerminal = createToolTerminalObserver(runId);
+  const toolFixture = {
+    benchmarkArgument: true,
+    mutation: { executor: false, middleware: false },
+    payload: {
+      rows: Array.from({ length: Math.ceil(argumentBytes / 1024) }, (_, index) => ({
+        index,
+        text: "x".repeat(1024),
+      })),
+    },
+  };
+  const fixtureJson = JSON.stringify(toolFixture);
+  const mutationOf = (args: unknown) => {
+    if (!isRecord(args) || !isRecord(args.mutation)) {
+      throw new Error("Synthetic tool received malformed nested arguments");
+    }
+    return args.mutation;
+  };
+  let updates = 0;
+  let presentations = 0;
+  let nextCall = 0;
+  const noop = () => {};
+  const ctx: ToolHandlerContext = {
+    params: {
+      runId,
+      onAgentEvent(event) {
+        if (event.stream === "item" && event.data.phase === "update") {
+          updates += 1;
+        }
+      },
+    },
+    state: new EmbeddedAgentSubscribeState({}),
+    log: { debug: noop, info: noop, warn: console.warn },
+    flushBlockReplyBuffer: noop,
+    shouldEmitToolResult: () => false,
+    shouldEmitToolOutput: () => false,
+    emitToolSummary: noop,
+    emitToolOutput: noop,
+    trimMessagingToolSent: noop,
+  };
+  const source: AnyAgentTool = {
+    name: "synthetic_stream",
+    label: "Synthetic stream",
+    description: "Emit synthetic progress for allocation measurement.",
+    parameters: Type.Object({}, { additionalProperties: true }),
+    async execute(toolCallId, args) {
+      // Real tools may mutate their inputs; snapshots must neither alias nor freeze them.
+      mutationOf(args).executor = true;
+      for (let index = 0; index < progressEvents; index++) {
+        handleToolExecutionUpdate(ctx, {
+          type: "tool_execution_update",
+          toolName: source.name,
+          toolCallId,
+          args,
+          partialResult: { content: [{ type: "text", text: `progress ${index}` }], details: {} },
+        });
+      }
+      return { content: [{ type: "text", text: "synthetic tool completed" }], details: {} };
+    },
+  };
+  setToolTerminalPresentation(source, (args) => {
+    const mutation = mutationOf(args);
+    if (mutation.executor !== true || mutation.middleware !== false) {
+      throw new Error("Terminal formatter lost its post-execution argument snapshot");
+    }
+    return { text: "synthetic terminal verified" };
+  });
+  const tool = wrapToolWithBeforeToolCallHook(
+    source,
+    {
+      runId,
+      onToolOutcome: (outcome) => {
+        if (
+          outcome.presentationOnly &&
+          outcome.terminalPresentation === "synthetic terminal verified"
+        ) {
+          presentations += 1;
+        }
+      },
+    },
+    { emitDiagnostics: false },
+  );
+  const invoke = async () => {
+    const toolCallId = `synthetic-call-${nextCall++}`;
+    const args: unknown = JSON.parse(fixtureJson);
+    const previousUpdates = updates;
+    const previousPresentations = presentations;
+    await runAgentHarnessToolInvocation({
+      tool,
+      call: { toolCallId, toolName: source.name, arguments: args },
+      runId,
+      signal: new AbortController().signal,
+      boundaries,
+      retainExecutionSnapshot: true,
+      applyMiddleware: async (event) => {
+        mutationOf(event.args).middleware = true;
+        return event.result;
+      },
+      onResult: (execution) => {
+        const mutation = mutationOf(execution.executedArguments);
+        if (mutation.executor !== false || mutation.middleware !== false) {
+          throw new Error("Executed argument snapshot aliases mutable tool or middleware input");
+        }
+        observeTerminal({
+          toolCallId,
+          toolName: source.name,
+          arguments: execution.executedArguments,
+          result: execution.result,
+          outcome: "success",
+          executionStarted: execution.boundary.executionStarted,
+        });
+        finalizeToolTerminalPresentation({
+          toolCallId,
+          runId,
+          result: execution.result,
+          isError: execution.isError,
+        });
+      },
+      onError: ({ error }) => {
+        throw error;
+      },
+    });
+    const snapshot = boundaries.consume(toolCallId);
+    const mutation = mutationOf(args);
+    if (
+      !snapshot?.executionStarted ||
+      peekAdjustedParamsForToolCall(toolCallId, runId) !== undefined ||
+      mutation.executor !== true ||
+      mutation.middleware !== false ||
+      updates - previousUpdates !== progressEvents ||
+      presentations - previousPresentations !== 1
+    ) {
+      throw new Error("Tool invocation, progress, presentation, or cleanup invariant failed");
+    }
+  };
+  const inspector = new Session();
+  inspector.connect();
+  const originalClone = globalThis.structuredClone;
+  let clones = 0;
+  let argumentClones = 0;
+  const percentile = (numbers: number[], fraction: number) =>
+    numbers.toSorted((a, b) => a - b)[Math.ceil(numbers.length * fraction) - 1]!;
+  const sample = async (samplePhase: string, count: number) => {
+    globalThis.gc?.();
+    clones = 0;
+    argumentClones = 0;
+    await inspector.post("HeapProfiler.startSampling", {
+      samplingInterval: 32768,
+      includeObjectsCollectedByMajorGC: true,
+      includeObjectsCollectedByMinorGC: true,
+    });
+    const durations: number[] = [];
+    globalThis.structuredClone = (value, options) => {
+      clones += 1;
+      if (isRecord(value) && value.benchmarkArgument === true) {
+        argumentClones += 1;
+      }
+      return originalClone(value, options);
+    };
+    try {
+      for (let index = 0; index < count; index++) {
+        const started = performance.now();
+        await invoke();
+        durations.push(performance.now() - started);
+      }
+    } finally {
+      globalThis.structuredClone = originalClone;
+    }
+    const { profile } = await inspector.post("HeapProfiler.stopSampling");
+    const profilePath = path.join(toolOutput, `${samplePhase}.heapprofile`);
+    writeFileSync(profilePath, JSON.stringify(profile));
+    const nodes = [profile.head];
+    let allocatedBytes = 0;
+    while (nodes.length) {
+      const node = nodes.pop();
+      if (node) {
+        allocatedBytes += node.selfSize;
+        nodes.push(...node.children);
+      }
+    }
+    return {
+      phase: samplePhase,
+      calls: count,
+      clonesPerTool: clones / count,
+      argumentClonesPerTool: argumentClones / count,
+      sampledAllocatedBytesPerTool: allocatedBytes / count,
+      latencyMs: {
+        median: percentile(durations, 0.5),
+        p95: percentile(durations, 0.95),
+        mean: durations.reduce((sum, value) => sum + value, 0) / count,
+      },
+      profilePath,
+    };
+  };
+  try {
+    const cold = await sample("cold", 1);
+    for (let index = 0; index < 3; index++) {
+      await invoke();
+    }
+    const startFile = values["tool-start-file"];
+    if (startFile) {
+      // Pair controllers release both warmed processes with the same future timestamp.
+      writeFileSync(`${startFile}.${process.pid}.ready`, "ready");
+      const deadline = Date.now() + 120000;
+      while (!existsSync(startFile)) {
+        if (Date.now() > deadline) {
+          throw new Error("Timed out waiting for the paired measurement barrier");
+        }
+        await delay(10);
+      }
+      const startAt = Number(readFileSync(startFile, "utf8"));
+      if (!Number.isSafeInteger(startAt) || startAt < Date.now()) {
+        throw new Error("Paired measurement barrier needs a future Unix timestamp in milliseconds");
+      }
+      await delay(startAt - Date.now());
+    }
+    const samples = [];
+    for (let index = 0; index < sampleCount; index++) {
+      samples.push(await sample(`warm-${index}`, calls));
+    }
+    const result = {
+      scenario: "tool-invocations",
+      output: toolOutput,
+      argumentBytes: Buffer.byteLength(fixtureJson),
+      progressEvents,
+      samplingIntervalBytes: 32768,
+      includesCollectedObjects: true,
+      note: "Main-isolate owner workload; imports excluded. Latency includes allocation sampling and clone counting; no Gateway transport/provider work.",
+      cold,
+      samples,
+      summary: {
+        clonesPerTool: percentile(
+          samples.map((value) => value.clonesPerTool),
+          0.5,
+        ),
+        argumentClonesPerTool: percentile(
+          samples.map((value) => value.argumentClonesPerTool),
+          0.5,
+        ),
+        allocatedBytesPerTool: {
+          median: percentile(
+            samples.map((value) => value.sampledAllocatedBytesPerTool),
+            0.5,
+          ),
+          p95: percentile(
+            samples.map((value) => value.sampledAllocatedBytesPerTool),
+            0.95,
+          ),
+        },
+        latencyMs: {
+          median: percentile(
+            samples.map((value) => value.latencyMs.median),
+            0.5,
+          ),
+          p95: percentile(
+            samples.map((value) => value.latencyMs.p95),
+            0.95,
+          ),
+        },
+      },
+    };
+    writeFileSync(path.join(toolOutput, "evidence.json"), JSON.stringify(result, null, 2));
+    console.log(JSON.stringify(result));
+  } finally {
+    globalThis.structuredClone = originalClone;
+    inspector.disconnect();
+  }
 }
