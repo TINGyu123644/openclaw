@@ -45,7 +45,19 @@ const setup = (
   action: "install" | "inspect" | "verify",
   overrides: Partial<Parameters<typeof runBrowserExtensionSetup>[0]> = {},
 ) => runBrowserExtensionSetup({ ...options, action, ...overrides });
-const approval = { product: "chrome" as const, enabled: false, awaitingApproval: true };
+const discovered = {
+  browser: "Chrome",
+  userDataDir: "/private/chrome",
+  profile: "Default",
+  securePreferencesPath: "/private/chrome/Default/Secure Preferences",
+  extensionId: "a".repeat(32),
+};
+const approval = {
+  ...discovered,
+  product: "chrome" as const,
+  enabled: false,
+  awaitingApproval: true,
+};
 function expectRedacted(result: unknown, ...secrets: string[]) {
   for (const secret of ["synthetic-private-relay-key", ...secrets]) {
     expect(JSON.stringify(result)).not.toContain(secret);
@@ -92,8 +104,13 @@ it("does not let sibling browser installations mask an unavailable Chrome helper
         registration({ issue: "runtime unavailable" }),
         registration({ product: "chromium" }),
       ],
-      storeDiscovered: [approval, { product: "chromium", enabled: true, awaitingApproval: false }],
-      discovered: [{ product: "chrome-for-testing" }],
+      storeDiscovered: [
+        approval,
+        { ...discovered, product: "chromium", enabled: true, awaitingApproval: false },
+      ],
+      discovered: [
+        { ...discovered, product: "chrome-for-testing", extensionPath: "/private/extension" },
+      ],
     }),
   );
   const result = await setup("inspect");

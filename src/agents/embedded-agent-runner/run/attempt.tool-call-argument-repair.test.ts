@@ -71,12 +71,13 @@ describe("malformed tool-call argument repair", () => {
     expect(result).toMatchObject({ content: [{ arguments: { text: "John Smith" } }] });
   });
 
-  it.each<{
+  type RepairCase = {
     name: string;
     tool: string;
     input: string | string[];
     expected: Record<string, unknown>;
-  }>`
+  };
+  it.each`
     name                              | tool             | input                                                                                                                                              | expected
     ${"fragmented JSON with junk"}    | ${"read"}        | ${[".functions.read:0 ", '{"path":"/tmp/report.txt"', "}x"]}                                                                                       | ${{ path: "/tmp/report.txt" }}
     ${"smart-quoted edit arrays"}     | ${"edit"}        | ${String.raw` {“path”:“notes/报告.md”,“edits”:[{“oldText”:“旧的 **草稿**”,“newText”:“更新 \"草稿\"\nnext”},{“oldText”:“tail”,“newText”:“done”}]}`} | ${{ path: "notes/报告.md", edits: [{ oldText: "旧的 **草稿**", newText: '更新 "草稿"\nnext' }, { oldText: "tail", newText: "done" }] }}
@@ -85,14 +86,17 @@ describe("malformed tool-call argument repair", () => {
     ${"inherited name rejection"}     | ${"constructor"} | ${"{“length”:“x”,“foo”:1}"}                                                                                                                        | ${{}}
     ${"escaped smart-quoted content"} | ${"write"}       | ${String.raw` {“path”:“safe.txt”,“content”:“line\nnext \"quoted\" path C:\\tmp mark \u2713 invalid \d”}`}                                          | ${{ path: "safe.txt", content: 'line\nnext "quoted" path C:\\tmp mark ✓ invalid \\d' }}
     ${"member-looking prose"}         | ${"write"}       | ${String.raw` {"path":"safe.txt","content":“text ”, “path”: “other.txt””}`}                                                                        | ${{ path: "safe.txt", content: "text ”, “path”: “other.txt”" }}
-  `("repairs $name across partial, end and final messages", async ({ tool, input, expected }) => {
-    const { calls, result, finalMessage } = await repair(
-      typeof input === "string" ? [input] : input,
-      tool,
-    );
-    expect(result).toBe(finalMessage);
-    for (const call of calls) {
-      expect(call.arguments).toEqual(expected);
-    }
-  });
+  `(
+    "repairs $name across partial, end and final messages",
+    async ({ tool, input, expected }: RepairCase) => {
+      const { calls, result, finalMessage } = await repair(
+        typeof input === "string" ? [input] : input,
+        tool,
+      );
+      expect(result).toBe(finalMessage);
+      for (const call of calls) {
+        expect(call.arguments).toEqual(expected);
+      }
+    },
+  );
 });

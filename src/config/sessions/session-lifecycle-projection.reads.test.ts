@@ -12,7 +12,7 @@ import { SessionEntryLifecycleUpsertConflictError } from "./session-mutation-con
 
 function bindBackend(
   { db: database, path: databasePath }: ReturnType<typeof openOpenClawAgentDatabase>,
-  environment: NodeJS.ProcessEnv,
+  environment: Parameters<typeof runWithSqliteWorkerStateContext>[0]["environment"],
 ) {
   return runWithSqliteWorkerStateContext({ environment }, () =>
     bindSqliteWorkerBackend({ agentId: "main" }, { database, databasePath }),

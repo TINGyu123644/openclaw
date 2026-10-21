@@ -128,22 +128,35 @@ describe("generated SQLite schema catalogs", () => {
     );
   });
 
-  it.each<{ name: string; from: string; to: string; code: string; objectName: string }>`
+  it.each`
     name                         | from                                               | to                                                 | code                            | objectName
     ${"DEFAULT value"}           | ${"snapshot_revision INTEGER NOT NULL DEFAULT 0"}  | ${"snapshot_revision INTEGER NOT NULL DEFAULT 1"}  | ${"column-definition-drift"}    | ${"session_nodes.snapshot_revision"}
     ${"CHECK expression"}        | ${"CHECK (entry_valid IN (-1, 0, 1))"}             | ${"CHECK (entry_valid IN (0, 1))"}                 | ${"column-definition-drift"}    | ${"session_nodes.entry_valid"}
     ${"partial-index predicate"} | ${"WHERE label IS NOT NULL;"}                      | ${"WHERE label IS NULL;"}                          | ${"missing-or-drifted-index"}   | ${"idx_agent_session_nodes_label"}
     ${"trigger body"}            | ${"SET snapshot_revision = snapshot_revision + 1"} | ${"SET snapshot_revision = snapshot_revision + 2"} | ${"missing-or-drifted-trigger"} | ${"session_entry_snapshots_after_insert"}
-  `("rejects $name drift through generated admission", ({ from, to, code, objectName }) => {
-    const database = createDatabase();
-    const driftedSql = OPENCLAW_AGENT_SCHEMA_SQL.replace(from, to);
-    expect(driftedSql).not.toBe(OPENCLAW_AGENT_SCHEMA_SQL);
-    database.exec(driftedSql);
-    expect(fingerprintSqliteSchemaCatalog(readNativeCatalog(database))).not.toBe(
-      readGeneratedSqliteFingerprint(OPENCLAW_AGENT_SCHEMA_SQL)?.fingerprint,
-    );
-    expect(collectSqliteSchemaIssues(database, OPENCLAW_AGENT_SCHEMA_SQL)).toContainEqual(
-      expect.objectContaining({ code, objectName }),
-    );
-  });
+  `(
+    "rejects $name drift through generated admission",
+    ({
+      from,
+      to,
+      code,
+      objectName,
+    }: {
+      from: string;
+      to: string;
+      code: string;
+      objectName: string;
+    }) => {
+      const database = createDatabase();
+      const driftedSql = OPENCLAW_AGENT_SCHEMA_SQL.replace(from, to);
+      expect(driftedSql).not.toBe(OPENCLAW_AGENT_SCHEMA_SQL);
+      database.exec(driftedSql);
+      expect(fingerprintSqliteSchemaCatalog(readNativeCatalog(database))).not.toBe(
+        readGeneratedSqliteFingerprint(OPENCLAW_AGENT_SCHEMA_SQL)?.fingerprint,
+      );
+      expect(collectSqliteSchemaIssues(database, OPENCLAW_AGENT_SCHEMA_SQL)).toContainEqual(
+        expect.objectContaining({ code, objectName }),
+      );
+    },
+  );
 });

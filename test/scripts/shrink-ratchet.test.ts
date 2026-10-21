@@ -37,16 +37,29 @@ describe("shrink-ratchet", () => {
     );
   });
 
-  it.each<{ file: string; source: string; expected: unknown; parse: (source: string) => unknown }>`
+  it.each`
     file            | source                                           | expected                              | parse
     ${"paths.txt"}  | ${"# grandfathered files\nsrc/b.ts\nsrc/a.ts\n"} | ${["src/b.ts", "src/a.ts"]}           | ${(source: string) => [...ratchet.parseRatchetPaths(source)]}
     ${"counts.txt"} | ${"# per-file debt\nsrc/b.ts\t2\nsrc/a.ts\t1\n"} | ${[["src/b.ts", 2], ["src/a.ts", 1]]} | ${(source: string) => [...ratchet.parseRatchetCounts(source, "counts.txt")]}
-  `("loads the existing $file baseline format", ({ file, source, expected, parse }) => {
-    const root = tempDirs.make("openclaw-shrink-ratchet-");
-    fs.writeFileSync(path.join(root, file), source);
+  `(
+    "loads the existing $file baseline format",
+    ({
+      file,
+      source,
+      expected,
+      parse,
+    }: {
+      file: string;
+      source: string;
+      expected: unknown;
+      parse: (source: string) => unknown;
+    }) => {
+      const root = tempDirs.make("openclaw-shrink-ratchet-");
+      fs.writeFileSync(path.join(root, file), source);
 
-    expect(ratchet.loadRatchetSnapshot<unknown>(root, file, false, parse)).toEqual(expected);
-  });
+      expect(ratchet.loadRatchetSnapshot<unknown>(root, file, false, parse)).toEqual(expected);
+    },
+  );
 
   it("loads worktree, index, and reference snapshots beyond the Git pipe limit", () => {
     const { root, git } = gitRepo("openclaw-shrink-ratchet-git-");
@@ -68,11 +81,13 @@ describe("shrink-ratchet", () => {
     expect(() => ratchet.loadRatchetReference(root, "missing-ref", baselinePath, parse)).toThrow();
   });
 
-  it.each<{ name: string; parse: () => unknown; error: RegExp }>`
+  it.each`
     name                  | parse                                                                           | error
     ${"duplicate counts"} | ${() => ratchet.parseRatchetCounts("src/a.ts\t1\nsrc/a.ts\t2\n", "counts.txt")} | ${/Invalid counts\.txt entry/u}
     ${"negative scalars"} | ${() => ratchet.parseRatchetScalar("-1\n", "scalar.txt")}                       | ${/exactly one non-negative integer/u}
-  `("rejects $name", ({ parse, error }) => expect(parse).toThrow(error));
+  `("rejects $name", ({ parse, error }: { parse: () => unknown; error: RegExp }) =>
+    expect(parse).toThrow(error),
+  );
 
   it("compares path sets without permitting growth", () => {
     expect(

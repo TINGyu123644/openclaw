@@ -57,6 +57,7 @@ export function observeNativeCommit(module: typeof admission, observe = () => {}
 export function captureCommandWorker(type: string) {
   let terminate: (() => Promise<number>) | undefined;
   // Preserve the original receiver and target only the worker carrying this command.
+  // oxlint-disable-next-line typescript/unbound-method -- Forwarded below with the original worker receiver.
   const posted = Worker.prototype.postMessage;
   vi.spyOn(Worker.prototype, "postMessage").mockImplementation(function (this: Worker, ...args) {
     const message: unknown = args[0];

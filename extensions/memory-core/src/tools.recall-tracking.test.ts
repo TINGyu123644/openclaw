@@ -12,6 +12,7 @@ const tracking = vi.hoisted(() => ({
   loaded: vi.fn<() => void>(),
 }));
 
+// mock-isolation: Observe the lazy import and recall writes without loading the persistence owner.
 vi.mock("./short-term-promotion-record.js", () => {
   tracking.loads += 1;
   tracking.loaded();

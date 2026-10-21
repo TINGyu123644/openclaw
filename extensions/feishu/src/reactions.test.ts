@@ -2,10 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const listMock = vi.hoisted(() => vi.fn());
 
+// mock-isolation: Exercise reaction pagination with a synthetic configured account.
 vi.mock("./accounts.js", () => ({
   resolveFeishuRuntimeAccount: () => ({ configured: true }),
 }));
 
+// mock-isolation: Supply fixed API pages without creating an authenticated Feishu client.
 vi.mock("./client.js", () => ({
   createFeishuClient: () => ({ im: { messageReaction: { list: listMock } } }),
 }));

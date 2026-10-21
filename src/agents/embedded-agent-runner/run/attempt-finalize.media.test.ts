@@ -59,7 +59,7 @@ describe("finalizeEmbeddedAttempt trajectory capture", () => {
   const yielded = { last: "aborted", completed: "stop", yielded: true } as const;
   const timeout = { kind: "timeout", phase: "prompt", source: "runtime" } as const;
 
-  it.each<TerminalCase>`
+  it.each`
     name                                     | terminal                         | currentStopReason | expectedStopReason | expectedFinalStatus | options
     ${"current over stale"}                  | ${ok}                            | ${"stop"}         | ${"stop"}          | ${"success"}        | ${{ last: "aborted" }}
     ${"normal completion"}                   | ${ok}                            | ${"length"}       | ${"stop"}          | ${"success"}        | ${{ completed: "stop" }}
@@ -72,7 +72,13 @@ describe("finalizeEmbeddedAttempt trajectory capture", () => {
     ${"yield over completed assistant"}      | ${yieldAbort}                    | ${"length"}       | ${"end_turn"}      | ${"success"}        | ${yielded}
   `(
     "$name",
-    ({ terminal, currentStopReason, expectedStopReason, expectedFinalStatus, options }) => {
+    ({
+      terminal,
+      currentStopReason,
+      expectedStopReason,
+      expectedFinalStatus,
+      options,
+    }: TerminalCase) => {
       const events = captureTrajectory({
         terminal,
         assistantTexts: options.texts ?? [],

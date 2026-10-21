@@ -108,11 +108,8 @@ function harness(
 function text(root: ParentNode, selector: string) {
   return root.querySelector(selector)?.textContent;
 }
-function query<T extends Element = HTMLElement>(root: ParentNode, selector: string) {
-  return root.querySelector<T>(selector);
-}
 function points(root: ParentNode) {
-  return query(root, ".sparkline-tile__chart polyline")?.getAttribute("points")?.split(" ");
+  return root.querySelector(".sparkline-tile__chart polyline")?.getAttribute("points")?.split(" ");
 }
 function calls(request: ReturnType<typeof harness>["request"], method: string) {
   return request.mock.calls.filter(([name]) => name === method);
@@ -290,10 +287,12 @@ describe("Systems workspace", () => {
     expect(calls(request, "storage.locations.probe")).toHaveLength(0);
     const probe = createDeferred<{ state: "ok"; freeBytes: number }>();
     request.mockReturnValueOnce(probe.promise);
-    const check = query<HTMLButtonElement>(section, '[aria-label="Check offsite"]')!;
+    const check = section.querySelector<HTMLButtonElement>('[aria-label="Check offsite"]')!;
     check.click();
     flush();
-    expect(query<HTMLButtonElement>(section, '[aria-label="Check offsite"]')?.disabled).toBe(true);
+    expect(section.querySelector<HTMLButtonElement>('[aria-label="Check offsite"]')?.disabled).toBe(
+      true,
+    );
     probe.resolve({ state: "ok", freeBytes: 1024 ** 3 });
     await probe.promise;
     flush();
@@ -492,12 +491,12 @@ describe("Systems workspace", () => {
     const counts = () => names(".systems-group__count");
     const choose = async (value: string) => {
       const menu = sidebar.querySelector(".systems-filter-menu");
-      const trigger = menu && query<HTMLButtonElement>(menu, ".oc-menu-trigger");
+      const trigger = menu?.querySelector<HTMLButtonElement>(".oc-menu-trigger");
       expect(trigger).toBeTruthy();
       trigger!.click();
       await waitForSolid(() => expect(trigger!.getAttribute("aria-expanded")).toBe("true"));
       vi.advanceTimersToNextFrame();
-      const item = menu && query<HTMLButtonElement>(menu, `.oc-menu-item[data-value="${value}"]`);
+      const item = menu?.querySelector<HTMLButtonElement>(`.oc-menu-item[data-value="${value}"]`);
       expect(item).toBeTruthy();
       item!.click();
       vi.advanceTimersToNextFrame();
@@ -682,7 +681,9 @@ describe("Systems workspace", () => {
     stats = { ...stats, loadAverage: [3, 2, 1], updatedAtMs: stats.updatedAtMs + 60_000 };
     await controller.refreshTelemetry();
     await waitForSolid(() => expect(readings()[0]).toBe("3.00"));
-    expect(query(page, "openclaw-sparkline")?.querySelector(".sparkline-tile__chart")).toBeNull();
+    expect(
+      page.querySelector("openclaw-sparkline")?.querySelector(".sparkline-tile__chart"),
+    ).toBeNull();
 
     node = { ...node, status: "unavailable" };
     await controller.refresh();

@@ -16,7 +16,10 @@ import {
   withConnectedDaemon,
 } from "./relay-coexistence.test-support.js";
 
-afterEach(clearRuntimeConfigSnapshot);
+afterEach(async () => {
+  await stopBrowserControlService();
+  clearRuntimeConfigSnapshot();
+});
 
 it("borrows the compiled daemon in another process and leaves it serving an external v2 client", async ({
   signal,

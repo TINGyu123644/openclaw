@@ -10,11 +10,13 @@ const sendCardFeishuMock = vi.hoisted(() =>
 
 const pendingTasks = new Set<Promise<void>>();
 
+// mock-isolation: Observe menu dispatch without booting the channel message runtime.
 vi.mock("./bot.js", () => ({
   handleFeishuMessage: handleFeishuMessageMock,
   parseFeishuMessageEvent: vi.fn(),
 }));
 
+// mock-isolation: Capture card sends without contacting Feishu.
 vi.mock("./send.js", () => ({
   sendCardFeishu: sendCardFeishuMock,
   getMessageFeishu: vi.fn(),

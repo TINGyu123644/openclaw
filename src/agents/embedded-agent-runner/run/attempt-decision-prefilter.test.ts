@@ -230,14 +230,15 @@ it("omits a large older exchange without disabling a complete recent one", async
     },
   );
 });
-it.each<{
+type ProjectionCase = {
   name: string;
   messages: AgentMessage[];
   request: string;
   expected: object | boolean;
   excluded: boolean;
   hooks: ReturnType<typeof hookFields> | undefined;
-}>`
+};
+it.each`
   name                              | messages                                                                                                | request                             | expected                                                                   | excluded | hooks
   ${"large request"}                | ${[]}                                                                                                   | ${"x".repeat(6001)}                 | ${false}                                                                   | ${false} | ${undefined}
   ${"large proposal"}               | ${[user("Help"), assistant("x".repeat(6001))]}                                                          | ${"Yes"}                            | ${false}                                                                   | ${false} | ${undefined}
@@ -263,7 +264,7 @@ it.each<{
   ${"explicit evaluation"}          | ${[]}                                                                                                   | ${"Use decision_evaluate on Hello"} | ${false}                                                                   | ${false} | ${undefined}
 `(
   "projects $name within privacy and size bounds",
-  async ({ messages, request, expected, excluded, hooks }) => {
+  async ({ messages, request, expected, excluded, hooks }: ProjectionCase) => {
     const projection =
       expected === true ? { latestRequest: request, beforePromptBuild: hooks } : expected;
     await expectProjection(messages, projection, request, excluded, hooks);

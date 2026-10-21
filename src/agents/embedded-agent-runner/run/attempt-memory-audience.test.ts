@@ -13,6 +13,7 @@ vi.mock(
 );
 // mock-isolation: the fake session owner replaces worker-thread session reads.
 vi.mock("../../../config/sessions/session-entry-read-runtime.js", () => fakeSessionEntryReadModule);
+// mock-isolation: Select the memory provider kind without activating a real plugin.
 vi.mock("../../../plugins/memory-state.js", () => ({
   resolveLoadedMemoryProviderKind: () => (mocks.native ? "native" : undefined),
 }));

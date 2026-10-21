@@ -160,8 +160,9 @@ describe.skipIf(!database.connection)("PostgreSQL memory_search product flows", 
         manager = result.manager;
         managers.set(agentId, manager);
       }
-      assert(manager.sync, "Expected a memory indexing manager");
+      assert(typeof manager.sync === "function", "Expected a memory indexing manager");
       await manager.sync({ reason: "cli", force });
+      return manager;
     });
 
   const search = (
