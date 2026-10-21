@@ -1,5 +1,6 @@
+import { getObserver } from "@solidjs/signals";
 import type { JSX } from "@solidjs/web";
-import { createMemo, createStore, lazy, merge, onCleanup, Show } from "solid-js";
+import { createMemo, lazy, merge, onCleanup, Show } from "solid-js";
 import type { ControlUiNavigationItem } from "../../../src/plugin-sdk/control-ui.js";
 import {
   navigationIconForRoute,
@@ -94,7 +95,7 @@ export function createSidebarMenus(deps: {
     menus.dismissTransientMenus();
     loadMenuRenderer();
   });
-  const [state, setState] = createStore<SidebarMenusState>({
+  const state: SidebarMenusState = {
     railPinMenuPosition: null,
     pluginNavigationMenuPosition: null,
     sessionMenu: null,
@@ -107,7 +108,8 @@ export function createSidebarMenus(deps: {
     agentMenuPosition: null,
     agentMenuMode: "click",
     identityMenuPosition: null,
-  });
+  };
+  const listeners = new Set<() => void>();
   const triggers = new Map<MenuTrigger, HTMLElement | null>();
   const menuHandles = new Map<"catalogView" | "agent", MenuHandle>();
   let focusAgentRoster: (() => void) | undefined;
@@ -133,17 +135,17 @@ export function createSidebarMenus(deps: {
       <LazyCatalogMenu {...props} />
     </Boundary>
   );
-  onCleanup(() => {
-    menus.disconnect();
-  });
 
   function setField<Key extends keyof SidebarMenusState>(
     key: Key,
     value: SidebarMenusState[Key],
   ): void {
-    setState((draft) => {
-      draft[key] = value;
-    });
+    if (Object.is(state[key], value)) {
+      return;
+    }
+    state[key] = value;
+    listeners.forEach((listener) => listener());
+    void commit();
   }
 
   const loadMenuRenderer = () => void menuRendererImport.load().catch(() => undefined);
@@ -285,6 +287,15 @@ export function createSidebarMenus(deps: {
 
   const menus = merge(state, {
     catalogMenu,
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    dispose(): void {
+      disposed = true;
+      menus.disconnect();
+      listeners.clear();
+    },
     get catalogMenuView() {
       return catalogMenuView!;
     },
@@ -628,30 +639,40 @@ export function createSidebarMenus(deps: {
 
     render(view: SidebarMenusOwner): JSX.Element {
       const avatars = projectOwner(agentMenuAvatars, (owner) => owner);
+      const projection = projectOwner(menus, (owner) => owner);
+      // Read through without copying identities or filtering same-owner publications.
+      const projected = new Proxy(menus, {
+        get(target, key, receiver) {
+          if (getObserver()) {
+            projection.revision();
+          }
+          return Reflect.get(target, key, receiver);
+        },
+      });
       return [
         <Show
           when={
-            menus.railPinMenuPosition ||
-            menus.pluginNavigationMenuPosition ||
-            menus.agentMenuPosition ||
-            menus.identityMenuPosition ||
-            menus.sessionMenu ||
-            menus.sessionGroupMenu ||
-            menus.sessionSortMenuPosition ||
-            menus.peopleFilterMenuPosition ||
-            menus.catalogViewMenuPosition
+            projected.railPinMenuPosition ||
+            projected.pluginNavigationMenuPosition ||
+            projected.agentMenuPosition ||
+            projected.identityMenuPosition ||
+            projected.sessionMenu ||
+            projected.sessionGroupMenu ||
+            projected.sessionSortMenuPosition ||
+            projected.peopleFilterMenuPosition ||
+            projected.catalogViewMenuPosition
           }
         >
           <Boundary>
             <MenuRenderer
-              menus={menus}
+              menus={projected}
               host={view}
               avatars={avatars.read}
               withActiveRoutes={agentMenuAvatars.withActiveRoutes}
             />
           </Boundary>
         </Show>,
-        menus.catalogMenuView.render(CatalogMenu),
+        projected.catalogMenuView.render(CatalogMenu),
       ];
     },
 
