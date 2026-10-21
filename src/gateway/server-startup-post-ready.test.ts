@@ -64,7 +64,7 @@ for (const engine of ["sqlite", "postgres"] as const) {
             },
           }),
         );
-      const prefix = `pg_gate_${randomUUID().replaceAll("-", "").slice(0, 8)}`;
+      const prefix = `gate_${randomUUID().replaceAll("-", "").slice(0, 8)}`;
       const client =
         engine === "postgres" ? new Client({ connectionString: postgresConnection }) : undefined;
       let server: GatewayServer | undefined;
