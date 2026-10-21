@@ -34,7 +34,7 @@ export type GatewayCpuUsageSnapshot = {
 export type GatewayResourceSnapshot = GatewayCpuUsageSnapshot & {
   memory: NodeJS.MemoryUsage;
   heapSpaces: HeapSpaceInfo[];
-  workers: ReturnType<typeof sampleTrackedWorkerMemory>;
+  workers?: ReturnType<typeof sampleTrackedWorkerMemory>;
   activeResources: Record<string, number>;
   runtime: { node: string; platform: string; arch: string };
   sessionCensus?: {
@@ -59,6 +59,7 @@ export type GatewayBenchCommand =
       kind: "resource-usage";
       action: "sample";
       initial?: boolean;
+      includeWorkers?: boolean;
       collectGarbage?: boolean;
       sessionCensus?: boolean;
       clearPromptCacheObservations?: boolean;
@@ -262,6 +263,7 @@ export async function readGatewayResources(
   child: ChildProcess,
   options: {
     initial?: boolean;
+    includeWorkers?: boolean;
     collectGarbage?: boolean;
     sessionCensus?: boolean;
     clearPromptCacheObservations?: boolean;

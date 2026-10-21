@@ -4,7 +4,6 @@ import { availableParallelism } from "node:os";
 import { fileURLToPath } from "node:url";
 import { getHeapSpaceStatistics, queryObjects, writeHeapSnapshot } from "node:v8";
 import { isMainThread } from "node:worker_threads";
-import { sampleTrackedWorkerMemory } from "../../src/infra/worker-cpu.ts";
 import { getWorkerMessageMetrics } from "../../src/infra/worker-message-metrics.ts";
 import { startGatewayBenchDiagnostics } from "./gateway-bench-diagnostics.ts";
 import {
@@ -44,7 +43,6 @@ function sampleResources(): GatewayResourceSnapshot {
     ...sampleCpu(),
     memory: process.memoryUsage(),
     heapSpaces: getHeapSpaceStatistics(),
-    workers: sampleTrackedWorkerMemory(),
     // These resource types keep the event loop alive; they are not ownership IDs.
     activeResources: Object.fromEntries(
       [...counts].toSorted(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
@@ -117,6 +115,9 @@ if (isMainThread) {
     }
     if (message.kind === "resource-usage" && message.action === "sample") {
       void (async () => {
+        if (message.initial && message.includeWorkers) {
+          throw new Error("Worker memory requires a current resource sample");
+        }
         let sessionCensus: GatewayResourceSnapshot["sessionCensus"];
         if (message.sessionCensus || message.clearPromptCacheObservations) {
           if (!message.collectGarbage || message.initial) {
@@ -155,10 +156,15 @@ if (isMainThread) {
             Agent: queryObjects(Agent, { format: "count" }),
           };
         }
+        // Native benchmark children do not load the Gateway's source registry or loader.
+        const workerMemory = message.includeWorkers
+          ? (await import("../../src/infra/worker-cpu.ts")).sampleTrackedWorkerMemory()
+          : undefined;
         const resources = message.initial
           ? initialResources
           : {
               ...sampleResources(),
+              ...(workerMemory ? { workers: workerMemory } : {}),
               ...(sessionCensus ? { sessionCensus } : {}),
             };
         if (message.snapshotPath) {

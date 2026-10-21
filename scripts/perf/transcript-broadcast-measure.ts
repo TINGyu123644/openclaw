@@ -92,6 +92,7 @@ const { values } = parseArgs({
     "history-turns": { type: "string", default: "0" },
     "history-last-turns": { type: "string", default: "0" },
     "history-payload-kib": { type: "string", default: "0" },
+    "verify-history-replay": { type: "boolean", default: false },
     "seed-history": { type: "boolean", default: false },
     rounds: { type: "string", default: "5" },
     "duration-ms": { type: "string", default: "3600000" },
@@ -157,6 +158,7 @@ const historyTurns = integer(values["history-turns"], "--history-turns", 0);
 const historyLastTurns = integer(values["history-last-turns"], "--history-last-turns", 0);
 const historyPayloadBytes =
   integer(values["history-payload-kib"], "--history-payload-kib", 0) * 1024;
+const verifyHistoryReplay = values["verify-history-replay"];
 if ((historyTurns || values["seed-history"]) && !idleScenario && !soakScenario) {
   throw new Error(
     "--history-turns and --seed-history require session-idle-retention or memory-soak",
@@ -167,6 +169,14 @@ if (values["seed-history"] && !historyTurns) {
 }
 if ((historyLastTurns || historyPayloadBytes) && !historyTurns) {
   throw new Error("--history-last-turns and --history-payload-kib require --history-turns");
+}
+if (verifyHistoryReplay && (!soakScenario || !historyTurns)) {
+  throw new Error("--verify-history-replay requires memory-soak and --history-turns > 0");
+}
+if (verifyHistoryReplay && (historyLastTurns || historyPayloadBytes)) {
+  throw new Error(
+    "--verify-history-replay uses equal-length histories with two 4 KiB reasoning items per turn; omit --history-last-turns and --history-payload-kib",
+  );
 }
 const reasoningScenario = retentionScenario || idleScenario || soakScenario;
 if (
@@ -230,6 +240,20 @@ if (exactClients > clientCount) {
 }
 const runCount = scenario === "chat.send" ? 1 : integer(values.runs, "--runs");
 const sessionCount = idleScenario ? integer(values.sessions, "--sessions") : runCount;
+const historyBytesPerTurn = 16 * 1024;
+const historyReasoningBytes = 4 * 1024;
+function historyReasoningContent(index: number, turn: number, phase: "tool" | "answer") {
+  return createCipheriv(
+    "aes-256-ctr",
+    createHash("sha256").update(`rs_soak_history_${index}_${turn}_${phase}`).digest(),
+    Buffer.alloc(16),
+  )
+    .update(Buffer.alloc(historyReasoningBytes / 2))
+    .toString("hex");
+}
+if (verifyHistoryReplay && historyTurns * sessionCount * historyBytesPerTurn > 1024 ** 3) {
+  throw new Error("Memory-soak history must fit within the 1 GiB estimated seed budget");
+}
 if (
   idleScenario &&
   (exactClients ||
@@ -376,6 +400,13 @@ if (values["stress-tools"] || values["mixed-rpc"]) {
 }
 const cfg = JSON.parse(readFileSync(path.join(root, "openclaw.json"), "utf8"));
 applyMockOpenAiModelConfig(cfg, { mockPort, modelRef: "openai/gpt-4.1" });
+if (verifyHistoryReplay) {
+  for (const model of cfg.models.providers.openai.models) {
+    // The synthetic provider must fit the seed plus turns accumulated across restarts.
+    model.contextWindow = 2_097_152;
+    model.contextTokens = 2_000_000;
+  }
+}
 cfg.agents.defaults = {
   ...cfg.agents.defaults,
   maxConcurrent: runCount,
@@ -780,6 +811,7 @@ let recoveredResponses = 0;
 let imageRequests = 0;
 let reasoningResponses = 0;
 let reasoningReplayRequests = 0;
+let historicalReplayRequests = 0;
 let activeWorkCounts: { running: number; queued: number } | undefined;
 async function readActiveWorkCounts() {
   let lastCounts: { running: number; queued: number } | undefined;
@@ -852,13 +884,40 @@ let cohort:
       reject: (error: Error) => void;
     }
   | undefined;
+const expectedHistoricalReasoning =
+  verifyHistoryReplay && !values["seed-history"]
+    ? Array.from(
+        { length: sessionCount },
+        (_, index) =>
+          new Set(
+            Array.from({ length: historyTurns * 2 }, (_unused, ordinal) =>
+              createHash("sha256")
+                .update(
+                  historyReasoningContent(
+                    index,
+                    Math.floor(ordinal / 2),
+                    ordinal % 2 === 0 ? "tool" : "answer",
+                  ),
+                )
+                .digest("hex"),
+            ),
+          ),
+      )
+    : [];
 const mock = createServer((req, res) => {
   if (req.url === "/health") {
     res.end("ok");
     return;
   }
   void (async () => {
-    const body: unknown = JSON.parse(await readBody(req));
+    const body: unknown = JSON.parse(
+      await readBody(
+        req,
+        verifyHistoryReplay
+          ? { requestMaxBytes: historyTurns * historyBytesPerTurn + 64 * 1024 ** 2 }
+          : undefined,
+      ),
+    );
     const facts = summarizeMockInferenceRequest(body);
     if (facts.purpose === "activity-recap") {
       recapRequests++;
@@ -938,6 +997,29 @@ const mock = createServer((req, res) => {
       lastUser !== undefined &&
       stripInboundMetadata(lastUser).trim().split("\n")[0] ===
         `Reply with benchmark stream ${index}. Transcript-broadcast cohort ${cohort.id}.`;
+    if (verifyHistoryReplay && primary) {
+      const expected = expectedHistoricalReasoning[index - 1]!;
+      const replayed = new Set(
+        (Array.isArray(input) ? input : []).flatMap((item: unknown) => {
+          if (
+            !isRecord(item) ||
+            item.type !== "reasoning" ||
+            typeof item.encrypted_content !== "string" ||
+            item.encrypted_content.length !== historyReasoningBytes
+          ) {
+            return [];
+          }
+          const digest = createHash("sha256").update(item.encrypted_content).digest("hex");
+          return expected.has(digest) ? [digest] : [];
+        }),
+      );
+      if (replayed.size !== historyTurns * 2) {
+        throw new Error(
+          `Deep-history replay lost reasoning items for session ${index - 1} in cohort ${cohort.id}: ${replayed.size}/${historyTurns * 2}`,
+        );
+      }
+      historicalReplayRequests++;
+    }
     if (retentionScenario && (primary || continuation)) {
       const hasImage =
         Array.isArray(input) &&
@@ -1335,7 +1417,9 @@ async function ready(targetPort: number, endpoint: string, owned?: ChildProcess)
   }
   throw new Error(`listener ${targetPort} did not become ready; inspect ${output}`);
 }
-const parentKey = "agent:main:transcript-broadcast-measure-parent";
+const parentKey = verifyHistoryReplay
+  ? "agent:main:memory-soak-history-parent"
+  : "agent:main:transcript-broadcast-measure-parent";
 const diffTargets =
   stressWorktree && diffControlOriginal !== undefined
     ? [{ sessionKey: parentKey, worktree: stressWorktree, original: diffControlOriginal }]
@@ -1383,14 +1467,16 @@ const mixedRpcMethods = [
   ...dashboardRpcShapes.map(({ method }) => method),
 ];
 const stressParentKey = "agent:main:transcript-broadcast-measure-native-parent";
-const keys = Array.from(
-  { length: sessionCount },
-  (_, index) => `agent:main:transcript-broadcast-measure-child-${index}`,
+const keys = Array.from({ length: sessionCount }, (_, index) =>
+  verifyHistoryReplay
+    ? `agent:main:memory-soak-history-child-${index}`
+    : `agent:main:transcript-broadcast-measure-child-${index}`,
 );
-const historySeedPath = path.join(root, "reopen-history.json");
+const historyNamespace = verifyHistoryReplay ? "memory-soak-history" : "reopen-history";
+const historySeedPath = path.join(root, `${historyNamespace}.json`);
 if (values["seed-history"]) {
   // Run offline, separately from measurement, using the transcript append owner.
-  mkdirSync(path.join(root, "reopen-history-seed"));
+  mkdirSync(path.join(root, `${historyNamespace}-seed`));
   process.env = { ...env };
   const [
     { SessionManager },
@@ -1399,6 +1485,8 @@ if (values["seed-history"]) {
     agentDb,
     stateDb,
     lifecycle,
+    { waitForTeamShapeWriteBudget },
+    { buildOpenAIResponsesReasoningReplayMetadata },
   ] = await Promise.all([
     import("../../src/agents/sessions/session-manager.js"),
     import("../../src/config/sessions/session-accessor.js"),
@@ -1406,21 +1494,27 @@ if (values["seed-history"]) {
     import("../../src/state/openclaw-agent-db.js"),
     import("../../src/state/openclaw-state-db.js"),
     import("../../src/shared/global-singleton.js"),
+    import("./team-shape-sessions.js"),
+    import("../../packages/ai/src/transports/openai-responses-compaction-replay.js"),
   ]);
   try {
+    if (soakScenario) {
+      await waitForTeamShapeWriteBudget();
+    }
     const timestamp = Number(fixture.now);
     const storePath = resolveOpenClawAgentSqlitePath({ agentId: "main", env });
     const parentTarget = { agentId: "main", sessionKey: parentKey, storePath, env };
     if (loadExactSessionEntry(parentTarget)) {
-      throw new Error("Synthetic reopen parent already exists");
+      throw new Error(`Synthetic ${historyNamespace} parent already exists`);
     }
     await upsertSessionEntryCore(parentTarget, {
-      sessionId: "reopen-history-parent",
+      sessionId: `${historyNamespace}-parent`,
       updatedAt: timestamp,
       createdAt: timestamp,
-      lifecycleRevision: "reopen-history-v1",
+      lifecycleRevision: `${historyNamespace}-v1`,
       createdVia: "operator",
       visibility: "shared",
+      ...(verifyHistoryReplay && stressWorktree ? { spawnedCwd: stressWorktree } : {}),
     });
     const usage = {
       input: 0,
@@ -1431,28 +1525,70 @@ if (values["seed-history"]) {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
     };
     for (const [index, sessionKey] of keys.entries()) {
-      const sessionId = `reopen-history-${index}`;
+      const sessionId = `${historyNamespace}-${index}`;
       const target = { agentId: "main", sessionId, sessionKey, storePath, env };
       if (loadExactSessionEntry(target)) {
-        throw new Error(`Synthetic reopen session already exists: ${sessionKey}`);
+        throw new Error(`Synthetic ${historyNamespace} session already exists: ${sessionKey}`);
       }
       await upsertSessionEntryCore(target, {
         sessionId,
         createdAt: timestamp,
         updatedAt: timestamp,
-        lifecycleRevision: "reopen-history-v1",
+        lifecycleRevision: `${historyNamespace}-v1`,
         createdVia: "operator",
         visibility: "shared",
         parentSessionKey: parentKey,
-        parentSessionId: "reopen-history-parent",
-        parentSessionLifecycleRevision: "reopen-history-v1",
+        parentSessionId: `${historyNamespace}-parent`,
+        parentSessionLifecycleRevision: `${historyNamespace}-v1`,
         spawnDepth: 1,
+        ...(verifyHistoryReplay && stressWorktree ? { spawnedCwd: stressWorktree } : {}),
       });
-      const manager = await SessionManager.openAsync(target, path.join(root, "workspace"));
+      const manager = await SessionManager.openAsync(
+        target,
+        verifyHistoryReplay && stressWorktree ? stressWorktree : path.join(root, "workspace"),
+      );
       await manager.appendModelChange("openai", "gpt-4.1");
       await manager.appendThinkingLevelChange("off");
       const turns = index === keys.length - 1 && historyLastTurns ? historyLastTurns : historyTurns;
+      const reasoningReplayMetadata = verifyHistoryReplay
+        ? buildOpenAIResponsesReasoningReplayMetadata(
+            {
+              ...cfg.models.providers.openai.models[0],
+              provider: "openai",
+              baseUrl: cfg.models.providers.openai.baseUrl,
+            },
+            { sessionId },
+          )
+        : undefined;
       for (let turn = 0; turn < turns; turn++) {
+        if (soakScenario && turn % 50 === 0) {
+          await waitForTeamShapeWriteBudget();
+        }
+        const thinking = (phase: "tool" | "answer") => {
+          if (!verifyHistoryReplay && (!historyPayloadBytes || phase === "answer")) {
+            return [];
+          }
+          return [
+            {
+              type: "thinking" as const,
+              thinking: verifyHistoryReplay
+                ? "Inspecting the synthetic history fixture."
+                : `Synthetic reasoning ${turn}.`,
+              ...(verifyHistoryReplay ? { openclawReasoningReplay: reasoningReplayMetadata } : {}),
+              thinkingSignature: JSON.stringify({
+                type: "reasoning",
+                id: verifyHistoryReplay
+                  ? `rs_soak_history_${index}_${turn}_${phase}`
+                  : `rs_fixture_${index}_${turn}`,
+                ...(verifyHistoryReplay ? { status: "completed" } : {}),
+                summary: [],
+                encrypted_content: verifyHistoryReplay
+                  ? historyReasoningContent(index, turn, phase)
+                  : promptContent.update(Buffer.alloc(historyPayloadBytes / 2)).toString("hex"),
+              }),
+            },
+          ];
+        };
         const callId = `fixture-${turn}`;
         const assistant = {
           role: "assistant" as const,
@@ -1471,22 +1607,7 @@ if (values["seed-history"]) {
           ...assistant,
           stopReason: "toolUse",
           content: [
-            ...(historyPayloadBytes
-              ? [
-                  {
-                    type: "thinking" as const,
-                    thinking: `Synthetic reasoning ${turn}.`,
-                    thinkingSignature: JSON.stringify({
-                      type: "reasoning",
-                      id: `rs_fixture_${index}_${turn}`,
-                      summary: [],
-                      encrypted_content: promptContent
-                        .update(Buffer.alloc(historyPayloadBytes / 2))
-                        .toString("hex"),
-                    }),
-                  },
-                ]
-              : []),
+            ...thinking("tool"),
             { type: "toolCall", id: callId, name: "read", arguments: { path: "fixture.txt" } },
           ],
         });
@@ -1510,14 +1631,27 @@ if (values["seed-history"]) {
         await manager.appendMessageAsync({
           ...assistant,
           stopReason: "stop",
-          content: [{ type: "text", text: `Synthetic inspection ${turn} complete.` }],
+          content: [
+            ...thinking("answer"),
+            { type: "text", text: `Synthetic inspection ${turn} complete.` },
+          ],
         });
       }
       console.log(`SEEDED ${index + 1}/${sessionCount}`);
     }
+    if (soakScenario) {
+      await waitForTeamShapeWriteBudget();
+    }
     writeFileSync(
       historySeedPath,
-      JSON.stringify({ sessionCount, historyTurns, historyLastTurns, historyPayloadBytes }),
+      JSON.stringify({
+        sessionCount,
+        historyTurns,
+        historyLastTurns,
+        historyPayloadBytes,
+        verifyHistoryReplay,
+        ...(verifyHistoryReplay ? { modelBaseUrl: cfg.models.providers.openai.baseUrl } : {}),
+      }),
     );
   } finally {
     await agentDb.closeOpenClawAgentDatabasesAsync();
@@ -1535,6 +1669,9 @@ if (historyTurns) {
     (seeded.historyPayloadBytes ?? 0) !== historyPayloadBytes
   ) {
     throw new Error("Run --seed-history with matching session count and history options first");
+  }
+  if (verifyHistoryReplay && seeded.modelBaseUrl !== cfg.models.providers.openai.baseUrl) {
+    throw new Error("Deep-history reasoning replay requires the same --mock-port used to seed it");
   }
 }
 const connectParams = {
@@ -2568,11 +2705,34 @@ try {
       content: { kind: "html", html: "<p>Synthetic dashboard workload</p>" },
     });
     await rpc(sender, "workboard.boards.upsert", { id: dashboardBoardId });
-    const existing = await rpc(sender, "workboard.cards.list", { boardId: dashboardBoardId });
-    if (!isRecord(existing) || !Array.isArray(existing.cards)) {
-      throw new Error("Synthetic workboard cards could not be read");
+    const existingCardIds = new Set<string>();
+    let after: unknown;
+    do {
+      const page = await rpc(sender, "workboard.cards.list", {
+        boardId: dashboardBoardId,
+        ...(after === undefined ? {} : { after }),
+      });
+      if (!isRecord(page) || !Array.isArray(page.cards)) {
+        throw new Error("Synthetic workboard cards could not be read");
+      }
+      for (const card of page.cards) {
+        if (
+          !isRecord(card) ||
+          typeof card.id !== "string" ||
+          !card.id ||
+          existingCardIds.has(card.id)
+        ) {
+          throw new Error("Synthetic workboard card pagination returned a missing or repeated ID");
+        }
+        existingCardIds.add(card.id);
+      }
+      after = page.nextCursor;
+    } while (after !== undefined);
+    // Reused fixtures keep exactly the requested viewer/card shape, including shrinking runs.
+    for (const id of [...existingCardIds].slice(clientCount)) {
+      await rpc(sender, "workboard.cards.delete", { id });
     }
-    for (let index = existing.cards.length; index < clientCount; index++) {
+    for (let index = existingCardIds.size; index < clientCount; index++) {
       await rpc(sender, "workboard.cards.create", {
         boardId: dashboardBoardId,
         title: `Synthetic dashboard card ${index}`,
@@ -2799,6 +2959,7 @@ try {
   }
   const initialRetainedResources = reasoningScenario
     ? await readGatewayResources(gateway, {
+        includeWorkers: true,
         collectGarbage: !soakScenario || !values.allocations,
         sessionCensus: values["session-census"],
         ...(idleScenario && values["heap-snapshot"]
@@ -2836,6 +2997,7 @@ try {
   }> = [];
   const sampleMemory = async (collectGarbage = false, phase?: string) => {
     const resources = await readGatewayResources(measuredGateway, {
+      includeWorkers: true,
       collectGarbage,
       sessionCensus: collectGarbage && values["session-census"],
       ...(idleScenario && phase && values["heap-snapshot"]
@@ -2945,6 +3107,7 @@ try {
     imageRequests = 0;
     reasoningResponses = 0;
     reasoningReplayRequests = 0;
+    historicalReplayRequests = 0;
     recapRequests = 0;
     recapReceipts.length = 0;
     recapPhase = undefined;
@@ -3235,6 +3398,11 @@ try {
         `incomplete synthetic reasoning replay: ${JSON.stringify({ reasoningResponses, reasoningReplayRequests })}`,
       );
     }
+    if (verifyHistoryReplay && historicalReplayRequests !== sessionCount) {
+      throw new Error(
+        `Deep history reached only ${historicalReplayRequests}/${sessionCount} foreground turns`,
+      );
+    }
     for (const event of turnScenario ? ["session.message", "sessions.changed"] : []) {
       const expected = perClientCounters[0]?.get(event) ?? 0;
       if (!expected || perClientCounters.some((counts) => counts.get(event) !== expected)) {
@@ -3259,6 +3427,7 @@ try {
     const retainedResources =
       retentionScenario || idleScenario
         ? await readGatewayResources(gateway, {
+            includeWorkers: true,
             collectGarbage: true,
             sessionCensus: values["session-census"],
             ...(idleScenario && values["heap-snapshot"]
@@ -3342,6 +3511,8 @@ try {
       toolCalls,
       toolResults,
       ...(reasoningScenario && { reasoningResponses, reasoningReplayRequests }),
+      verifyHistoryReplay,
+      ...(verifyHistoryReplay ? { historicalReplayRequests } : {}),
       recapRequests,
       ...(values["activity-summaries"] ? { recapPhase, recapReceipts: [...recapReceipts] } : {}),
       ...(retentionScenario
@@ -3592,6 +3763,7 @@ try {
   const result = {
     output,
     scenario,
+    verifyHistoryReplay,
     revision: values.revision ?? null,
     operationsPerRound: turnScenario ? sessionCount : operations,
     rpcConcurrency,
