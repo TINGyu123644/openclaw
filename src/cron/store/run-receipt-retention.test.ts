@@ -123,7 +123,8 @@ it("keeps the pending terminal receipt within 64 rows until reconciliation relea
     await reconciler.start();
     expect(runCommandJob).toHaveBeenCalledOnce();
     const recovered = (await loadCronStore(storePath)).jobs[0]!;
-    expect(recovered.state).toMatchObject({ runningAtMs: undefined, runningReceiptId: undefined });
+    expect(recovered.state.runningAtMs).toBeUndefined();
+    expect(recovered.state.runningReceiptId).toBeUndefined();
     expect(recovered.state.triggerState).toEqual({ owner: "saved edit" });
     expect(retirement()).toEqual({ receipt_id: pending!.receiptId });
 

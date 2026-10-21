@@ -40,7 +40,7 @@ type UnitCase = {
   unit: string;
   exclusive: boolean;
 };
-it.each<UnitCase>`
+it.each`
   name                          | scope       | membership                                                | user                        | env                                            | timeoutMs   | unit                               | exclusive
   ${"system cgroup v2"}         | ${"system"} | ${`0::/system.slice/${customUnit}`}                       | ${loaded("1min 30s")}       | ${own}                                         | ${90_000}   | ${customUnit}                      | ${true}
   ${"user cgroup v2"}           | ${"user"}   | ${`0::${userParent}/app.slice/${customUnit}`}             | ${loaded("5min 30s")}       | ${own}                                         | ${330_000}  | ${customUnit}                      | ${true}
@@ -50,7 +50,7 @@ it.each<UnitCase>`
   ${"disabled zero"}            | ${"user"}   | ${""}                                                     | ${loaded("0")}              | ${{ ...own, OPENCLAW_PROFILE: "work" }}        | ${Infinity} | ${"openclaw-gateway-work.service"} | ${false}
 `(
   "reads the running unit timeout: $name",
-  async ({ scope, membership, user, env, timeoutMs, unit, exclusive }) => {
+  async ({ scope, membership, user, env, timeoutMs, unit, exclusive }: UnitCase) => {
     if (membership) {
       readFile.mockResolvedValue(`2:cpu,cpuacct:${userParent}\n${membership}`);
     }

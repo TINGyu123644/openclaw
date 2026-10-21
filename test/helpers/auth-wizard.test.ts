@@ -10,13 +10,16 @@ import { openOpenClawStateDatabase } from "../../src/state/openclaw-state-db.js"
 import { captureFullEnv } from "../../src/test-utils/env.js";
 import { setupAuthTestEnv } from "./auth-wizard.js";
 
-beforeEach(() => captureFullEnv().restore);
+beforeEach(() => {
+  const env = captureFullEnv();
+  return () => env.restore();
+});
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
 });
 
-it.each([undefined, "custom-agent"])(
+it.for([undefined, "custom-agent"])(
   "owns agent directory (%s) until cleanup",
   async (agentSubdir, { onTestFinished }) => {
     const previousEnv = { ...process.env };
@@ -38,7 +41,7 @@ it.each([undefined, "custom-agent"])(
   },
 );
 
-it.each(["absent", "set"])(
+it.for(["absent", "set"])(
   "releases state after agent mkdir fails with agent override %s",
   async (prior, { onTestFinished }) => {
     vi.stubEnv(

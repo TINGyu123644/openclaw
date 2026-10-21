@@ -13,7 +13,7 @@ const handshake = "WebSocket was closed before the connection was established";
 type Classification = { error: unknown; transient: boolean };
 type BenignClassification = { error: Error; benign: boolean };
 
-it.each<Classification>`
+it.each`
   error                                                                                                                                                                                       | transient
   ${http2}                                                                                                                                                                                    | ${true}
   ${causedBy(http2)}                                                                                                                                                                          | ${true}
@@ -22,20 +22,26 @@ it.each<Classification>`
   ${new Error("Web fetch failed (404): Not Found")}                                                                                                                                           | ${false}
   ${new Error(`Failed to get gateway information from Discord: Unexpected token 'u', "upstream connect error or disconnect/reset before headers. reset reason: overflow" is not valid JSON`)} | ${true}
   ${causedBy(codedError("ERR_WEBSOCKET_NON_RETRYABLE_CLOSE", "WebSocket closed 1008 policy violation: ECONNRESET"), "socket hang up")}                                                        | ${false}
-`("classifies network rejection $error as transient=$transient", ({ error, transient }) => {
-  expect(isTransientNetworkError(error)).toBe(transient);
-});
+`(
+  "classifies network rejection $error as transient=$transient",
+  ({ error, transient }: Classification) => {
+    expect(isTransientNetworkError(error)).toBe(transient);
+  },
+);
 
-it.each<Classification>`
+it.each`
   error                                                                                                   | transient
   ${codedError("SQLITE_CANTOPEN")}                                                                        | ${true}
   ${Object.assign(new Error("unable to open database file"), { code: "ERR_SQLITE_ERROR", errcode: 14 })}  | ${true}
   ${new Error("SQLITE_BUSY: database is locked")}                                                         | ${true}
   ${codedError("SQLITE_CONSTRAINT", "UNIQUE constraint failed")}                                          | ${false}
   ${{ code: "ERR_SQLITE_ERROR", message: "constraint failed", errcode: 19, errstr: "constraint failed" }} | ${false}
-`("classifies SQLite rejection $error as transient=$transient", ({ error, transient }) => {
-  expect(isTransientSqliteError(error)).toBe(transient);
-});
+`(
+  "classifies SQLite rejection $error as transient=$transient",
+  ({ error, transient }: Classification) => {
+    expect(isTransientSqliteError(error)).toBe(transient);
+  },
+);
 
 it.each([
   [null, false],
@@ -48,7 +54,7 @@ it.each([
   expect(isTransientUnhandledRejectionError(error)).toBe(transient);
 });
 
-it.each<BenignClassification>`
+it.each`
   error                                                    | benign
   ${codedError("EPIPE")}                                   | ${true}
   ${codedError("ENETDOWN")}                                | ${true}
@@ -61,6 +67,9 @@ it.each<BenignClassification>`
   ${new Error("terminated")}                               | ${false}
   ${new TypeError("terminated unexpectedly")}              | ${false}
   ${new Error(`WebSocket error: ${handshake}`)}            | ${false}
-`("restricts benign uncaught exceptions: $error benign=$benign", ({ error, benign }) => {
-  expect(isBenignUncaughtExceptionError(error)).toBe(benign);
-});
+`(
+  "restricts benign uncaught exceptions: $error benign=$benign",
+  ({ error, benign }: BenignClassification) => {
+    expect(isBenignUncaughtExceptionError(error)).toBe(benign);
+  },
+);

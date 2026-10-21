@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { DatabaseSync, StatementSync } from "node:sqlite";
+import { mock } from "node:test";
 import { parentPort } from "node:worker_threads";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 
@@ -17,26 +18,35 @@ const observeRow = (row: Record<string, unknown>) => {
     }
   }
 };
-const { all, iterate } = StatementSync.prototype;
+const all = mock.method(StatementSync.prototype, "all");
+const iterate = mock.method(StatementSync.prototype, "iterate");
 StatementSync.prototype.all = function (this: StatementSync, ...args) {
-  const rows = Reflect.apply(all, this, args);
-  if (active && matches(this.sourceSQL)) {
-    rows.forEach(observeRow);
+  try {
+    const rows = Reflect.apply(all, this, args);
+    if (active && matches(this.sourceSQL)) {
+      rows.forEach(observeRow);
+    }
+    return rows;
+  } finally {
+    all.mock.resetCalls();
   }
-  return rows;
 };
 StatementSync.prototype.iterate = function (this: StatementSync, ...args) {
-  const rows = Reflect.apply(iterate, this, args);
-  if (!active || !matches(this.sourceSQL)) {
-    return rows;
-  }
-  return (function* () {
-    for (const row of rows) {
-      observeRow(row);
-      yield row;
+  try {
+    const rows = Reflect.apply(iterate, this, args);
+    if (!active || !matches(this.sourceSQL)) {
+      return rows;
     }
-    return undefined;
-  })();
+    return (function* () {
+      for (const row of rows) {
+        observeRow(row);
+        yield row;
+      }
+      return undefined;
+    })();
+  } finally {
+    iterate.mock.resetCalls();
+  }
 };
 
 function calibrate(counters: Int32Array) {
@@ -49,15 +59,20 @@ function calibrate(counters: Int32Array) {
     );
     const beforeRows = Atomics.load(counters, 2);
     const beforeBytes = Atomics.load(counters, 3);
-    for (const [index, read] of [() => query.all(text), () => [...query.iterate(text)]].entries()) {
-      assert.deepEqual(
-        read().map((row) => row.text),
-        [text],
-      );
-      assert.equal(Atomics.load(counters, 2) - beforeRows, index + 1);
-      assert.equal(Atomics.load(counters, 3) - beforeBytes, (index + 1) * Buffer.byteLength(text));
-      Atomics.store(counters, index, 1);
-    }
+    assert.deepEqual(
+      query.all(text).map((row) => row.text),
+      [text],
+    );
+    assert.equal(Atomics.load(counters, 2) - beforeRows, 1);
+    assert.equal(Atomics.load(counters, 3) - beforeBytes, Buffer.byteLength(text));
+    Atomics.store(counters, 0, 1);
+    assert.deepEqual(
+      [...query.iterate(text)].map((row) => row.text),
+      [text],
+    );
+    assert.equal(Atomics.load(counters, 2) - beforeRows, 2);
+    assert.equal(Atomics.load(counters, 3) - beforeBytes, 2 * Buffer.byteLength(text));
+    Atomics.store(counters, 1, 1);
   } finally {
     db.close();
   }

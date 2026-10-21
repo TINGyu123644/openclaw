@@ -61,11 +61,11 @@ function spawnRouteOwnerFixture(waitForReady: boolean, abortSignal: AbortSignal)
 }
 
 type ClaimCase = { name: string; script: string; stopping: boolean };
-it.each<ClaimCase>`
+it.each`
   name                                                      | script                                                                             | stopping
   ${"reports readiness and stops the foreground claim"}     | ${'process.stdout.write("Press Ctrl+C to exit.\\n"); setInterval(() => {}, 1000)'} | ${true}
   ${"reports output when the claim exits before readiness"} | ${'process.stderr.write("route denied\\n"); process.exit(7)'}                      | ${false}
-`("$name", async ({ script, stopping }) => {
+`("$name", async ({ script, stopping }: ClaimCase) => {
   const messages: TailscaleRouteOwnerMessage[] = [];
   const owner = runTailscaleRouteOwner({ argv: [process.execPath, "-e", script] }, (message) =>
     messages.push(message),

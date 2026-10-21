@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 import { writeConfigFile } from "../config/config.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
+import type { OperatorScope } from "./operator-scopes.js";
 import {
   connectReq,
   CONTROL_UI_CLIENT,
@@ -16,7 +17,7 @@ installGatewayTestHooks({ scope: "suite" });
 
 test("named preferences stay profile-scoped over authenticated multi-agent Gateway RPC", async () => {
   const origin = "https://preferences.example.test";
-  const scopes = ["operator.read", "operator.write"];
+  const scopes: OperatorScope[] = ["operator.read", "operator.write"];
   const controlUi = { allowedOrigins: [origin] };
   const readerRole = { agents: "*" as const, scopes, sessions: { others: "none" as const } };
   const auth = {

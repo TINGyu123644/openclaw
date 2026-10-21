@@ -85,7 +85,9 @@ it.skipIf(process.platform === "win32")(
         expect(isProcessAlive(pid), `custody left pid ${pid} alive`).toBe(false);
       }
     } finally {
-      pids.toReversed().forEach(killPidIfAlive);
+      for (const pid of pids.toReversed()) {
+        await killPidIfAlive(pid);
+      }
       await instance.cleanup().finally(() => receipts.close());
     }
   },

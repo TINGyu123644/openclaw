@@ -101,13 +101,17 @@ it.each(["legacy-running", "legacy-terminal", "started-terminal", "receiptless"]
           state: {
             lastRunStatus: "error",
             lastDeliveryStatus: "unknown",
-            consecutiveErrors: undefined,
-            autoDisabled: undefined,
-            runningAtMs: undefined,
-            nextRunAtMs: undefined,
-            startupCatchupAtMs: undefined,
           },
         });
+        for (const key of [
+          "consecutiveErrors",
+          "autoDisabled",
+          "runningAtMs",
+          "nextRunAtMs",
+          "startupCatchupAtMs",
+        ] as const) {
+          expect(recovered.state[key]).toBeUndefined();
+        }
         expect(state.deps.runCommandJob).not.toHaveBeenCalled();
       } finally {
         stop(state);

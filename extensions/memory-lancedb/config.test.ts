@@ -22,7 +22,7 @@ function validate(value: unknown) {
 function configWith(overrides: Record<string, unknown> = {}) {
   return { embedding: { apiKey: "sk-test" }, ...overrides };
 }
-const parse = memoryConfigSchema.parse;
+const parse = memoryConfigSchema.parse.bind(memoryConfigSchema);
 function rejects(config: unknown, message: string) {
   expect(() => parse(config)).toThrow(message);
 }
