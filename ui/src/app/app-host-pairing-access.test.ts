@@ -2,7 +2,7 @@
 
 import { expectDefined } from "@openclaw/normalization-core";
 import { render } from "@solidjs/web";
-import { createComponent, createMemo, onSettled } from "solid-js";
+import { createComponent, createMemo, onSettled, Show } from "solid-js";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { GatewayBrowserClient } from "../api/gateway.ts";
@@ -68,9 +68,12 @@ function deferredRenderer() {
   const load = vi.fn(() => retrying.promise).mockImplementationOnce(() => loading.promise);
   const view = () => {
     const ready = createMemo(load);
-    return createMemo(() => {
-      ready();
-      return document.createTextNode("Lazy view ready");
+    return createComponent(Show, {
+      get when() {
+        ready();
+        return true;
+      },
+      children: (_ready) => document.createTextNode("Lazy view ready"),
     });
   };
   return { loading, retrying, load, view };
@@ -475,7 +478,7 @@ describe("application shell pairing access", () => {
     ["settings", true],
   ] as const)("keeps lazy %s visible (failed: %s)", async (surface, failed) => {
     const settings = surface === "settings";
-    const { shell, container, refresh, renderSidebar } = createPairingShell({
+    const { shell, container, overlaySnapshot, refresh, renderSidebar } = createPairingShell({
       auth: settings ? { role: "operator" } : admin,
       setupCode: settings ? undefined : "pair-mobile-secret",
     });
@@ -491,7 +494,12 @@ describe("application shell pairing access", () => {
       };
       await refresh();
     } else {
+      overlaySnapshot.devicePairSetupOpen = false;
       await renderSidebar();
+      await vi.dynamicImportSettled();
+      expect(load).not.toHaveBeenCalled();
+      overlaySnapshot.devicePairSetupOpen = true;
+      await refresh();
     }
     await waitForSolid(() => expect(load).toHaveBeenCalledOnce());
     const message = settings

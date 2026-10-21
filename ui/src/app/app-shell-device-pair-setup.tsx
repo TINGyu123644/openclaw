@@ -1,5 +1,5 @@
 import type { JSX as SolidJSX } from "@solidjs/web";
-import { Errored, lazy, Loading, Show } from "solid-js";
+import { children, Errored, isPending, lazy, Loading, Show } from "solid-js";
 import { t } from "../lib/reactive/i18n.ts";
 
 type DevicePairSetupModule = typeof import("../pages/devices/view-pairing.tsx");
@@ -12,17 +12,29 @@ const PairingDialog = lazy(() => import("../pages/devices/view-pairing.tsx"), {
 export function DevicePairSetup(props: { props: DevicePairSetupProps }): SolidJSX.Element {
   return (
     <Show when={props.props.open}>
-      <Errored
-        fallback={(_error, reset) => (
-          <PairingDialogFallback failed retry={reset} onClose={() => props.props.onClose()} />
-        )}
-      >
-        <Loading
-          fallback={<PairingDialogFallback failed={false} onClose={() => props.props.onClose()} />}
-        >
-          <PairingDialog {...props.props} />
-        </Loading>
-      </Errored>
+      {(_open) => {
+        // Observe the lazy content while Errored retains its fallback during a retry.
+        const content = children(() => <PairingDialog {...props.props} />);
+        return (
+          <Errored
+            fallback={(_error, reset) => (
+              <PairingDialogFallback
+                failed={!isPending(() => content())}
+                retry={reset}
+                onClose={() => props.props.onClose()}
+              />
+            )}
+          >
+            <Loading
+              fallback={
+                <PairingDialogFallback failed={false} onClose={() => props.props.onClose()} />
+              }
+            >
+              {content()}
+            </Loading>
+          </Errored>
+        );
+      }}
     </Show>
   );
 }
