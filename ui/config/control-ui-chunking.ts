@@ -59,6 +59,8 @@ export function controlUiStableChunkName(id: string): string | undefined {
   const normalized = normalizeModuleId(id);
 
   switch (controlUiBootManifestKey(id)) {
+    case "node_modules/@solidjs/signals/dist/prod/core/action.js":
+    case "node_modules/@solidjs/signals/dist/dev/core/action.js":
     case "node_modules/@solidjs/signals/dist/prod/core/verdict.js":
     case "node_modules/@solidjs/signals/dist/prod/core/lanes.js":
       // Solid's eager initializers must not pull the route boot groups into startup.

@@ -1021,7 +1021,7 @@
   "ui/src/lib/strip-thinking-tags.ts",
   "ui/src/lib/system-info.ts",
   "ui/src/lib/terminal-availability.ts",
-  "ui/src/lib/toast-host.ts",
+  "ui/src/lib/toast-host.tsx",
   "ui/src/lib/toast.ts",
   "ui/src/lib/uploads.ts",
   "ui/src/local-storage.ts",
