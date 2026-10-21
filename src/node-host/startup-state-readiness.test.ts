@@ -3,10 +3,14 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { seedMacNodeWorkerProofState } from "../../scripts/lib/mac-node-worker-proof-state.mjs";
+import { ClientCredentialMigrationRequiredError } from "../infra/client-credential-readiness.js";
 import { readDeviceAuthTokenForTest } from "../infra/device-auth-store.test-support.js";
 import { generateStoredDeviceIdentity } from "../infra/device-identity-store.js";
 import * as identityStore from "../infra/device-identity.js";
-import { resetExecApprovalsMigrationGateForTest } from "../infra/exec-approvals-migration-gate.js";
+import {
+  ExecApprovalsMigrationRequiredError,
+  resetExecApprovalsMigrationGateForTest,
+} from "../infra/exec-approvals-migration-gate.js";
 import { readExecApprovalsConfigRow as approvals } from "../infra/exec-approvals-sqlite.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
@@ -138,15 +142,14 @@ describe("node-host state readiness", () => {
       const { sourcePath, raw } = writeSource(relativePath, contents);
       const start = device ? runNodeHostWorker : run;
       if (!auth && !device && !approvalsFile) {
-        await expect(start()).rejects.toThrow();
-        const retainedPath =
+        await expect(start()).rejects.toThrow(
           relativePath === "exec-approvals.json.doctor-importing"
-            ? path.join(stateDir, "exec-approvals.json")
-            : sourcePath;
-        expect(fs.readFileSync(retainedPath)).toEqual(Buffer.from(raw));
-        if (retainedPath !== sourcePath) {
-          expect(fs.existsSync(sourcePath)).toBe(false);
-        }
+            ? ExecApprovalsMigrationRequiredError
+            : ClientCredentialMigrationRequiredError,
+        );
+        expect(fs.readFileSync(sourcePath)).toEqual(Buffer.from(raw));
+        expect(fs.existsSync(databasePath())).toBe(false);
+        expect(fs.existsSync(path.join(stateDir, "client", "credentials.sqlite"))).toBe(false);
         expectUnprepared();
         return;
       }

@@ -13,6 +13,7 @@ import {
   resolveClientCredentialLegacyImportClaims,
   type LegacyDatabase,
 } from "./client-credential-migration-data.js";
+import { resolveStateClientCredentialEnvironment } from "./client-credential-paths.js";
 import {
   readClientCredentialReceipt,
   writeClientCredentialReceipt,
@@ -146,9 +147,14 @@ export function bindFreshClientCredentialStore(
   if (!source.isTransaction || !hasSqlitePostCommitScope(source)) {
     throw new Error("Client credential bootstrap has no source commit lifecycle.");
   }
+  // Auxiliary shared-schema files do not select a native client credential owner.
+  const env = resolveStateClientCredentialEnvironment(options);
+  if (!env) {
+    return;
+  }
   // A fresh PG anchor exists before its first network connection or schema metadata.
   const postgres = postgresBootstrapProvenance(source);
-  const target = openClientCredentialCustody(options.env, {
+  const target = openClientCredentialCustody(env, {
     createIfMissing: true,
     migration: true,
   });
@@ -270,7 +276,11 @@ export function recoverClientCredentialStore(
       "Shared credentials are still authoritative; complete their migration before using the local store.",
     );
   }
-  const target = openClientCredentialCustody(options.env, {
+  const env = resolveStateClientCredentialEnvironment(options);
+  if (!env) {
+    return;
+  }
+  const target = openClientCredentialCustody(env, {
     createIfMissing: false,
     migration: true,
   });
@@ -360,6 +370,7 @@ export function prepareClientCredentialMigration(
     bindFreshClientCredentialStore(source, options);
     return;
   }
+  const env = resolveStateClientCredentialEnvironment(options);
   const maintenance = getOpenClawDatabaseMaintenanceScope();
   const capture =
     options.capture ??
@@ -368,7 +379,7 @@ export function prepareClientCredentialMigration(
       ? undefined
       : getDoctorMigrationBackup(source, {
           path: options.path,
-          env: options.env,
+          env: env ?? options.env,
           tables: [...CLIENT_CREDENTIAL_SOURCE_TABLES, "sqlite_stat1", "sqlite_stat4"],
         })?.capture);
   if (
@@ -379,6 +390,11 @@ export function prepareClientCredentialMigration(
   ) {
     throw new Error(
       "Client credentials require backed-up migration custody; stop the app and run openclaw doctor --fix.",
+    );
+  }
+  if (!env) {
+    throw new Error(
+      "Client credentials in an auxiliary shared database require explicit recovery; preserve the source database.",
     );
   }
   assertStateDatabaseAccessAllowed(options.path);
@@ -428,7 +444,7 @@ export function prepareClientCredentialMigration(
       authTablePresent,
     }),
   };
-  const target = openClientCredentialCustody(options.env, {
+  const target = openClientCredentialCustody(env, {
     createIfMissing: true,
     migration: true,
   });

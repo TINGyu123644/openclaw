@@ -108,10 +108,10 @@ function sqliteFixture() {
 
 function expectSqliteRebindRefused(f: ReturnType<typeof fixture>) {
   const previous = localSnapshot(f.env);
-  const next = { ...f, sourcePath: path.join(path.dirname(f.sourcePath), "second.sqlite") };
-  using source = openNodeSqliteDatabase(next.sourcePath);
+  fs.renameSync(f.sourcePath, `${f.sourcePath}.previous`);
+  using source = openNodeSqliteDatabase(f.sourcePath);
   createSqliteSource(source, 23);
-  expect(() => bind(source, next)).toThrow(/previous shared database/);
+  expect(() => bind(source, f)).toThrow(/previous shared database/);
   expect(localSnapshot(f.env)).toEqual(previous);
   expect(source.prepare("SELECT value FROM bootstrap_sentinel").get()).toEqual({ value: 23 });
 }
@@ -364,20 +364,26 @@ describe("fresh SQLite client credential binding", () => {
   it("restores the old readable binding after rollback and admits the same fresh source on retry", () => {
     const f = sqliteFixture();
     const previous = localSnapshot(f.env);
-    const next = { ...f, sourcePath: path.join(path.dirname(f.sourcePath), "second.sqlite") };
-    using source = openNodeSqliteDatabase(next.sourcePath);
-    expect(() =>
-      runSqliteImmediateTransactionSync(source, () => {
-        bindFreshClientCredentialStore(source, { path: next.sourcePath, env: next.env });
-        createSqliteSource(source, 23);
-        throw new Error("fixture rebind rollback");
-      }),
-    ).toThrow("fixture rebind rollback");
-    expect(source.isTransaction).toBe(false);
-    expect(
-      source.prepare("SELECT 1 FROM sqlite_schema WHERE name = 'bootstrap_sentinel'").get(),
-    ).toBeUndefined();
-    expect(localSnapshot(f.env)).toEqual(previous);
+    const previousPath = `${f.sourcePath}.previous`;
+    const replacementPath = `${f.sourcePath}.replacement`;
+    fs.renameSync(f.sourcePath, previousPath);
+    {
+      using source = openNodeSqliteDatabase(f.sourcePath);
+      expect(() =>
+        runSqliteImmediateTransactionSync(source, () => {
+          bindFreshClientCredentialStore(source, { path: f.sourcePath, env: f.env });
+          createSqliteSource(source, 23);
+          throw new Error("fixture rebind rollback");
+        }),
+      ).toThrow("fixture rebind rollback");
+      expect(source.isTransaction).toBe(false);
+      expect(
+        source.prepare("SELECT 1 FROM sqlite_schema WHERE name = 'bootstrap_sentinel'").get(),
+      ).toBeUndefined();
+      expect(localSnapshot(f.env)).toEqual(previous);
+    }
+    fs.renameSync(f.sourcePath, replacementPath);
+    fs.renameSync(previousPath, f.sourcePath);
     expect(
       runClientCredentialOperation(
         f.env,
@@ -385,21 +391,27 @@ describe("fresh SQLite client credential binding", () => {
         { readOnly: true },
       ),
     ).toEqual({ kind: "identity", identity: null });
-    // Read-only admission must not seal absent inputs before the independent rebind.
+    // Restore the same replacement generation for retry after proving rollback readability.
     expect(localSnapshot(f.env)).toEqual(previous);
-    runSqliteImmediateTransactionSync(source, () => {
-      createSqliteSource(source, 23);
-      bindFreshClientCredentialStore(source, { path: next.sourcePath, env: next.env });
+    fs.renameSync(f.sourcePath, previousPath);
+    fs.renameSync(replacementPath, f.sourcePath);
+    using retried = openNodeSqliteDatabase(f.sourcePath);
+    runSqliteImmediateTransactionSync(retried, () => {
+      createSqliteSource(retried, 23);
+      bindFreshClientCredentialStore(retried, { path: f.sourcePath, env: f.env });
     });
     expect(localSnapshot(f.env).receipt).toMatchObject({
       phase: "complete",
       receipt: {
-        source: { identity: `${fs.realpathSync(next.sourcePath)}:23` },
-        sharedFile: readClientCredentialFileIdentity(next.sourcePath),
+        source: { identity: `${fs.realpathSync(f.sourcePath)}:23` },
+        sharedFile: readClientCredentialFileIdentity(f.sourcePath),
       },
     });
-    expect(source.prepare("SELECT value FROM bootstrap_sentinel").get()).toEqual({ value: 23 });
-    using first = openNodeSqliteDatabase(f.sourcePath);
+    expect(retried.prepare("SELECT value FROM bootstrap_sentinel").get()).toEqual({ value: 23 });
+    expect(
+      runClientCredentialOperation(f.env, { kind: "socket.read" }, { readOnly: true }),
+    ).toEqual({ kind: "socket", socket: null });
+    using first = openNodeSqliteDatabase(previousPath);
     expect(first.prepare("SELECT value FROM bootstrap_sentinel").get()).toEqual({ value: 17 });
   });
 
@@ -443,14 +455,14 @@ describe("fresh SQLite client credential binding", () => {
     (native) => {
       const f = sqliteFixture();
       const previous = localSnapshot(f.env);
-      const next = { ...f, sourcePath: path.join(path.dirname(f.sourcePath), "second.sqlite") };
-      using source = openNodeSqliteDatabase(next.sourcePath);
+      fs.renameSync(f.sourcePath, `${f.sourcePath}.previous`);
+      using source = openNodeSqliteDatabase(f.sourcePath);
       if (native) {
         source.exec("BEGIN IMMEDIATE");
       }
       try {
         expect(() =>
-          bindFreshClientCredentialStore(source, { path: next.sourcePath, env: next.env }),
+          bindFreshClientCredentialStore(source, { path: f.sourcePath, env: f.env }),
         ).toThrow("Client credential bootstrap has no source commit lifecycle");
       } finally {
         if (source.isTransaction) {
@@ -464,14 +476,14 @@ describe("fresh SQLite client credential binding", () => {
   it("retains a parseable copied fence when the source committed before its owner failed", () => {
     const f = sqliteFixture();
     const previous = localSnapshot(f.env);
-    const next = { ...f, sourcePath: path.join(path.dirname(f.sourcePath), "second.sqlite") };
-    const source = openNodeSqliteDatabase(next.sourcePath);
+    fs.renameSync(f.sourcePath, `${f.sourcePath}.previous`);
+    const source = openNodeSqliteDatabase(f.sourcePath);
     try {
       expect(() =>
         runSqliteImmediateTransactionSync(
           source,
           () => {
-            bindFreshClientCredentialStore(source, { path: next.sourcePath, env: next.env });
+            bindFreshClientCredentialStore(source, { path: f.sourcePath, env: f.env });
             createSqliteSource(source, 23);
           },
           {
@@ -495,7 +507,7 @@ describe("fresh SQLite client credential binding", () => {
       receipt: {
         format: 1,
         source: null,
-        sharedFile: readClientCredentialFileIdentity(next.sourcePath),
+        sharedFile: readClientCredentialFileIdentity(f.sourcePath),
         legacyImports: {},
       },
     });
@@ -506,12 +518,13 @@ describe("fresh SQLite client credential binding", () => {
         { readOnly: true },
       ),
     ).toThrow("migration is incomplete or stale");
-    using committed = openNodeSqliteDatabase(next.sourcePath);
+    const committedPath = `${f.sourcePath}.committed`;
+    fs.renameSync(f.sourcePath, committedPath);
+    using committed = openNodeSqliteDatabase(committedPath);
     expect(committed.prepare("SELECT value FROM bootstrap_sentinel").get()).toEqual({ value: 23 });
-    const third = { ...f, sourcePath: path.join(path.dirname(f.sourcePath), "third.sqlite") };
-    using replacement = openNodeSqliteDatabase(third.sourcePath);
+    using replacement = openNodeSqliteDatabase(f.sourcePath);
     createSqliteSource(replacement, 31);
-    expect(() => bind(replacement, third)).toThrow(/previous shared database/);
+    expect(() => bind(replacement, f)).toThrow(/previous shared database/);
     expect(localSnapshot(f.env)).toEqual(pending);
     expect(committed.prepare("SELECT value FROM bootstrap_sentinel").get()).toEqual({ value: 23 });
     expect(replacement.prepare("SELECT value FROM bootstrap_sentinel").get()).toEqual({
@@ -537,9 +550,11 @@ describe("fresh SQLite client credential binding", () => {
           updated_at_ms: 29,
         },
       });
-      using first = openNodeSqliteDatabase(f.sourcePath);
-      createSqliteSource(first, 17);
-      bind(first, f);
+      {
+        using first = openNodeSqliteDatabase(f.sourcePath);
+        createSqliteSource(first, 17);
+        bind(first, f);
+      }
       {
         using owner = openClientCredentialCustody(f.env, { migration: true })!;
         const stored = readClientCredentialReceipt(owner.database)!;
@@ -557,15 +572,21 @@ describe("fresh SQLite client credential binding", () => {
         expect(previous[material]).toHaveLength(1);
       }
       expectCredentialsReadable(f);
-      const next = { ...f, sourcePath: path.join(path.dirname(f.sourcePath), "second.sqlite") };
-      using replacement = openNodeSqliteDatabase(next.sourcePath);
-      if (engine === "postgres") {
-        createAnchor(replacement);
-      } else {
-        createSqliteSource(replacement, 23);
+      const previousPath = `${f.sourcePath}.previous`;
+      fs.renameSync(f.sourcePath, previousPath);
+      {
+        using replacement = openNodeSqliteDatabase(f.sourcePath);
+        if (engine === "postgres") {
+          createAnchor(replacement);
+        } else {
+          createSqliteSource(replacement, 23);
+        }
+        expect(() => bind(replacement, f)).toThrow(/previous shared database/);
+        expect(localSnapshot(f.env)).toEqual(previous);
       }
-      expect(() => bind(replacement, next)).toThrow(/previous shared database/);
-      expect(localSnapshot(f.env)).toEqual(previous);
+      fs.renameSync(f.sourcePath, `${f.sourcePath}.refused`);
+      fs.renameSync(previousPath, f.sourcePath);
+      using first = openNodeSqliteDatabase(f.sourcePath);
       expect(first.prepare("SELECT value FROM bootstrap_sentinel").get()).toEqual({ value: 17 });
       expectCredentialsReadable(f);
 
@@ -589,7 +610,7 @@ describe("fresh SQLite client credential binding", () => {
     },
   );
 
-  it("binds a second shared database when the previous bootstrap has no material or claims", () => {
+  it("binds a replacement canonical generation when the previous bootstrap has no material or claims", () => {
     const f = sqliteFixture();
     const previous = localSnapshot(f.env);
     expect(previous.receipt?.receipt.legacyImports).toEqual({});
@@ -600,10 +621,11 @@ describe("fresh SQLite client credential binding", () => {
       origins: [],
       sockets: [],
     });
-    const next = { ...f, sourcePath: path.join(path.dirname(f.sourcePath), "second.sqlite") };
-    using source = openNodeSqliteDatabase(next.sourcePath);
+    const previousPath = `${f.sourcePath}.previous`;
+    fs.renameSync(f.sourcePath, previousPath);
+    using source = openNodeSqliteDatabase(f.sourcePath);
     createSqliteSource(source, 23);
-    bind(source, next);
+    bind(source, f);
     const nextSnapshot = localSnapshot(f.env);
     expect(nextSnapshot.receipt?.receipt.legacyImports).toEqual({});
     expect(nextSnapshot).toMatchObject({
@@ -613,10 +635,10 @@ describe("fresh SQLite client credential binding", () => {
           source: {
             kind: "canonical",
             engine: "sqlite",
-            identity: `${fs.realpathSync(next.sourcePath)}:23`,
+            identity: `${fs.realpathSync(f.sourcePath)}:23`,
             generation: "bootstrap:23",
           },
-          sharedFile: readClientCredentialFileIdentity(next.sourcePath),
+          sharedFile: readClientCredentialFileIdentity(f.sourcePath),
         },
       },
       identities: [],
@@ -624,7 +646,10 @@ describe("fresh SQLite client credential binding", () => {
       origins: [],
       sockets: [],
     });
-    using first = openNodeSqliteDatabase(f.sourcePath);
+    expect(
+      runClientCredentialOperation(f.env, { kind: "socket.read" }, { readOnly: true }),
+    ).toEqual({ kind: "socket", socket: null });
+    using first = openNodeSqliteDatabase(previousPath);
     expect(first.prepare("SELECT value FROM bootstrap_sentinel").get()).toEqual({ value: 17 });
     expect(source.prepare("SELECT value FROM bootstrap_sentinel").get()).toEqual({ value: 23 });
   });
@@ -739,10 +764,10 @@ describe("fresh SQLite client credential binding", () => {
         return;
       }
       const previous = localSnapshot(f.env);
-      const next = { ...f, sourcePath: path.join(path.dirname(f.sourcePath), "second.sqlite") };
-      using target = openNodeSqliteDatabase(next.sourcePath);
+      fs.renameSync(f.sourcePath, `${f.sourcePath}.previous`);
+      using target = openNodeSqliteDatabase(f.sourcePath);
       createAnchor(target);
-      expect(() => bind(target, next)).toThrow(/previous shared database/);
+      expect(() => bind(target, f)).toThrow(/previous shared database/);
       expect(localSnapshot(f.env)).toEqual(previous);
     },
   );

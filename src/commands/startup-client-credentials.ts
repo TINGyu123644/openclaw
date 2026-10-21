@@ -17,9 +17,9 @@ import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
 /** Inspect all required inputs before maintenance can create a store or migrate shared schema. */
 async function prepareRequiredLegacyClientCredentials(env: NodeJS.ProcessEnv) {
   const [
-    identity,
-    auth,
-    approvals,
+    { prepareLegacyDeviceIdentity },
+    { prepareLegacyDeviceAuth },
+    { prepareLegacyExecApprovals, readLegacyExecApprovalsPreparationFacts },
     { resolveClientCredentialLegacyImportClaims },
     { executeSqliteQuerySync, getNodeSqliteKysely },
     { tableExists },
@@ -81,10 +81,7 @@ async function prepareRequiredLegacyClientCredentials(env: NodeJS.ProcessEnv) {
             authTablePresent: version !== 0 || tableExists(db, "device_auth_tokens"),
           })
         : {},
-      approvals: approvals.readLegacyExecApprovalsPreparationFacts(
-        db,
-        resolveExecApprovalsPath(env),
-      ),
+      approvals: readLegacyExecApprovalsPreparationFacts(db, resolveExecApprovalsPath(env)),
     };
   };
   // PostgreSQL boot admission is synchronous; SQLite snapshot preparation may await.
@@ -96,20 +93,20 @@ async function prepareRequiredLegacyClientCredentials(env: NodeJS.ProcessEnv) {
   identities = source?.identities ?? identities;
   legacyImports = { ...source?.legacyImports, ...legacyImports };
   const stateDir = resolveStateDir(env);
-  let detectedIdentity: Awaited<ReturnType<typeof identity.prepareLegacyDeviceIdentity>>;
+  let detectedIdentity: Awaited<ReturnType<typeof prepareLegacyDeviceIdentity>>;
   try {
-    detectedIdentity = await identity.prepareLegacyDeviceIdentity({
+    detectedIdentity = await prepareLegacyDeviceIdentity({
       stateDir,
       identities,
       legacyImports,
     });
-    await auth.prepareLegacyDeviceAuth({ stateDir, legacyImports });
+    await prepareLegacyDeviceAuth({ stateDir, legacyImports });
   } catch (error) {
     throw new ClientCredentialMigrationRequiredError(
       `Legacy client credentials require migration: ${String(error)}`,
     );
   }
-  await approvals.prepareLegacyExecApprovals({ stateDir, env, facts: source?.approvals });
+  await prepareLegacyExecApprovals({ stateDir, env, facts: source?.approvals });
   return detectedIdentity;
 }
 
