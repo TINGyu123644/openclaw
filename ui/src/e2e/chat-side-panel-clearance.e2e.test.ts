@@ -183,6 +183,7 @@ suite.define(() => {
             "Review",
             "Subagents",
             "Processes",
+            "Context",
             "Terminal",
           ]);
           for (const [index, choice] of [choices.first(), choices.last()].entries()) {
