@@ -71,9 +71,9 @@ function canonicalOwner(jobs: CompactNodeTestShard[], shardName: string) {
   };
 }
 
-function expectSameFields<T, K extends keyof T>(
-  actual: T,
-  expected: Pick<T, K>,
+function expectSameFields<K extends PropertyKey>(
+  actual: Partial<Record<K, unknown>>,
+  expected: Partial<Record<K, unknown>>,
   keys: readonly K[],
 ) {
   for (const key of keys) {
