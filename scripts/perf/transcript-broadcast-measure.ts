@@ -56,6 +56,7 @@ const { values } = parseArgs({
   options: {
     "state-dir": { type: "string" },
     allocations: { type: "boolean", default: false },
+    "worker-allocations": { type: "boolean", default: false },
     diagnostics: { type: "boolean", default: false },
     "prep-trace": { type: "boolean", default: false },
     "cpu-profile": { type: "boolean", default: false },
@@ -114,6 +115,9 @@ const { values } = parseArgs({
 });
 if (!values["state-dir"]) {
   throw new Error("--state-dir is required (existing team-shape fixture)");
+}
+if (values["worker-allocations"] && !values.allocations) {
+  throw new Error("--worker-allocations requires --allocations");
 }
 const integer = (raw: string, label: string, min = 1) =>
   parseStrictIntegerOption({ raw, label, min, fallback: min });
@@ -2636,6 +2640,7 @@ try {
     // Reading or stopping a V8 sampling profile forces GC; keep one window for the entire soak.
     await controlGatewayProfile(gateway, "heap", "start", soakAllocationPath, {
       samplingIntervalBytes: soakSamplingIntervalBytes,
+      includeWorkers: values["worker-allocations"],
     });
   }
   const measurementStartedAt = Date.now();
@@ -2956,6 +2961,7 @@ try {
             path.join(output, `allocation-${round}.heapprofile`),
             turnScenario ? sessionCount : operations,
             measuredWorkload,
+            { includeWorkers: values["worker-allocations"] },
           )
         : undefined;
     if (!values.allocations || soakScenario) {
@@ -3396,6 +3402,7 @@ try {
     mixedRpc: values["mixed-rpc"],
     stressTools: values["stress-tools"],
     operatorAccessPolicy: values["operator-access-policy"],
+    workerAllocations: values["worker-allocations"],
     stressSubagents: values["stress-subagents"],
     cronRuns,
     ...(values["mixed-rpc"] ? { diffEditControlVerified: true, diffEditVisibilityMs } : {}),
