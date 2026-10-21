@@ -659,6 +659,8 @@ async function fetchWithSsrFGuardInternal(
           headers.set("content-type", body.type);
         }
         init.headers = headers;
+        // This is the caller's immutable Blob, not an unbounded network Response.
+        // nosemgrep: security.opengrep.ghsa-p536-vvpp-9mc8.openclaw.web-fetch-or-media-unbounded-response-read
         init.body = new Uint8Array(await body.arrayBuffer());
       }
 
