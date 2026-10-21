@@ -1015,7 +1015,7 @@ const mock = createServer((req, res) => {
       );
       if (replayed.size !== historyTurns * 2) {
         throw new Error(
-          `Deep-history replay lost reasoning items for session ${index - 1} in cohort ${cohort.id}: ${replayed.size}/${historyTurns * 2}`,
+          `Deep-history replay lost reasoning items for session ${index - 1}: ${replayed.size}/${historyTurns * 2}`,
         );
       }
       historicalReplayRequests++;
