@@ -550,6 +550,23 @@ async function measureToolInvocations() {
     await delay(0);
     clones = 0;
     argumentClones = 0;
+    const startFile = values["tool-start-file"];
+    if (samplePhase === "warm-0" && startFile) {
+      // Release both prepared processes with the same future capture timestamp.
+      writeFileSync(`${startFile}.${process.pid}.ready`, "ready");
+      const deadline = Date.now() + 120000;
+      while (!existsSync(startFile)) {
+        if (Date.now() > deadline) {
+          throw new Error("Timed out waiting for the paired measurement barrier");
+        }
+        await delay(10);
+      }
+      const startAt = Number(readFileSync(startFile, "utf8"));
+      if (!Number.isSafeInteger(startAt) || startAt < Date.now()) {
+        throw new Error("Paired measurement barrier needs a future Unix timestamp in milliseconds");
+      }
+      await delay(startAt - Date.now());
+    }
     await inspector.post("HeapProfiler.startSampling", {
       samplingInterval: 32768,
       includeObjectsCollectedByMajorGC: true,
@@ -647,23 +664,6 @@ async function measureToolInvocations() {
     const cold = await sample("cold", 1, 0);
     for (let index = 0; index < 3; index++) {
       await invoke();
-    }
-    const startFile = values["tool-start-file"];
-    if (startFile) {
-      // Pair controllers release both warmed processes with the same future timestamp.
-      writeFileSync(`${startFile}.${process.pid}.ready`, "ready");
-      const deadline = Date.now() + 120000;
-      while (!existsSync(startFile)) {
-        if (Date.now() > deadline) {
-          throw new Error("Timed out waiting for the paired measurement barrier");
-        }
-        await delay(10);
-      }
-      const startAt = Number(readFileSync(startFile, "utf8"));
-      if (!Number.isSafeInteger(startAt) || startAt < Date.now()) {
-        throw new Error("Paired measurement barrier needs a future Unix timestamp in milliseconds");
-      }
-      await delay(startAt - Date.now());
     }
     const samples = [];
     for (let index = 0; index < sampleCount; index++) {
