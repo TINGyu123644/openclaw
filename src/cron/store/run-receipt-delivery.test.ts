@@ -11,18 +11,14 @@ import {
   claimCronRunReceiptForTest,
   makeCronReceiptJob,
   makeCronRecoveryJob,
-  finishCronRunReceiptAsync as finishReceipt,
+  finishCronRunReceiptAsync,
 } from "./run-receipt-store.test-support.js";
 
 const { logger, makeStorePath } = setupCronServiceSuite({ prefix: "cron-delivery-commit-" });
 
-it.each([
-  ["commit", "started", 1, "committed"],
-  ["retired", "not-started", 0, "not-committed"],
-  ["reply-lost", "started", 0, "unknown"],
-] as const)(
+it.each(["commit", "retired", "reply-lost"] as const)(
   "publishes delivery admission only after a successful worker reply: %s",
-  async (outcome, phase, publications, settlement) => {
+  async (outcome) => {
     const { storePath } = await makeStorePath();
     const job = makeCronReceiptJob("delivery-commit");
     await writeCronStoreSnapshot({ storePath, jobs: [job] });
@@ -56,16 +52,26 @@ it.each([
         await expect(attempt).rejects.toBeInstanceOf(Error);
       }
       await reply?.waitForExit();
-      expect(readPhase()).toBe(phase);
-      expect(published).toHaveBeenCalledTimes(publications);
-      expect(settled).toHaveBeenCalledWith(settlement);
+      expect(readPhase()).toBe(outcome === "retired" ? "not-started" : "started");
+      expect(published).toHaveBeenCalledTimes(outcome === "commit" ? 1 : 0);
+      expect(settled).toHaveBeenCalledWith(
+        outcome === "reply-lost"
+          ? "unknown"
+          : outcome === "retired"
+            ? "not-committed"
+            : "committed",
+      );
       if (reply) {
         expect(reply.wasDropped()).toBe(true);
         expect(reply.attempts).toEqual(["cron.markDeliveryStarted"]);
       }
     } finally {
       await reply?.close();
-      await finishReceipt({ handle: receipt, status: "interrupted", finishedAtMs: Date.now() });
+      await finishCronRunReceiptAsync({
+        handle: receipt,
+        status: "interrupted",
+        finishedAtMs: Date.now(),
+      });
     }
   },
 );
@@ -74,44 +80,41 @@ it.each(["legacy-running", "legacy-terminal", "started-terminal", "receiptless"]
   "holds an interrupted ambiguous one-shot disabled across repeated startup: %s",
   async (kind) => {
     const { storePath } = await makeStorePath();
-    const now = Date.now();
-    const job = makeCronRecoveryJob("ambiguous-one-shot", now);
-    job.schedule = { kind: "at", at: new Date(now).toISOString() };
+    const startedAtMs = Date.now();
+    const job = makeCronRecoveryJob("ambiguous-one-shot", startedAtMs);
+    job.schedule = { kind: "at", at: new Date(startedAtMs).toISOString() };
     job.deleteAfterRun = true;
     await writeCronStoreSnapshot({ storePath, jobs: [job] });
     if (kind !== "receiptless") {
-      const receipt = claimCronRunReceiptForTest(storePath, job, now);
+      const receipt = claimCronRunReceiptForTest(storePath, job, startedAtMs);
       job.state.runningReceiptId = receipt.receiptId;
       await writeCronStoreSnapshot({ storePath, jobs: [job] });
       openOpenClawStateDatabase()
         .db.prepare("UPDATE cron_run_receipts SET delivery_attempt_state = ? WHERE receipt_id = ?")
         .run(kind === "started-terminal" ? "started" : "unknown", receipt.receiptId);
       if (kind !== "legacy-running") {
-        await finishReceipt({ handle: receipt, status: "interrupted", finishedAtMs: now + 1 });
+        await finishCronRunReceiptAsync({
+          handle: receipt,
+          status: "interrupted",
+          finishedAtMs: startedAtMs + 1,
+        });
       }
     }
     for (let restart = 0; restart < 2; restart += 1) {
-      const state = makeCronRecoveryState(logger, storePath, now + 2);
+      const state = makeCronRecoveryState(logger, storePath, startedAtMs + 2);
       state.deps.runCommandJob = vi.fn(async () => ({ status: "ok" as const }));
       try {
         await start(state);
         const recovered = (await loadCronStore(storePath)).jobs[0];
         expect(recovered).toMatchObject({
           enabled: false,
-          state: {
-            lastRunStatus: "error",
-            lastDeliveryStatus: "unknown",
-          },
+          state: { lastRunStatus: "error", lastDeliveryStatus: "unknown" },
         });
-        for (const key of [
-          "consecutiveErrors",
-          "autoDisabled",
-          "runningAtMs",
-          "nextRunAtMs",
-          "startupCatchupAtMs",
-        ] as const) {
-          expect(recovered.state[key]).toBeUndefined();
-        }
+        expect(recovered?.state.consecutiveErrors).toBeUndefined();
+        expect(recovered?.state.autoDisabled).toBeUndefined();
+        expect(recovered?.state.runningAtMs).toBeUndefined();
+        expect(recovered?.state.nextRunAtMs).toBeUndefined();
+        expect(recovered?.state.startupCatchupAtMs).toBeUndefined();
         expect(state.deps.runCommandJob).not.toHaveBeenCalled();
       } finally {
         stop(state);
