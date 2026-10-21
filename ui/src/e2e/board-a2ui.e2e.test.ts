@@ -328,6 +328,11 @@ suite.define(() => {
   it("contains a catalog render failure while sibling components keep updating", async () => {
     const page = await suite.newPage();
     await page.evaluate((messages) => {
+      const actions: unknown[] = [];
+      Reflect.set(globalThis, "catalogActions", actions);
+      Reflect.set(globalThis, "openclaw", {
+        state: { emit: async (action: unknown) => actions.push(action) },
+      });
       Reflect.set(globalThis, "openclawA2UIBoot", { messages });
       document.body.append(document.createElement("openclaw-a2ui-host"));
     }, buildInitialMessages("v0.8"));
@@ -340,9 +345,18 @@ suite.define(() => {
       updateComponents("v0.8", [
         {
           id: "root",
-          component: { Column: { children: { explicitList: ["title", "broken"] } } },
+          component: { Column: { children: { explicitList: ["title", "modal"] } } },
         },
         textComponent("v0.8", "title", "A2UI board widget"),
+        {
+          id: "modal",
+          component: { Modal: { entryPointChild: "action", contentChild: "modal-content" } },
+        },
+        textComponent("v0.8", "modal-content", "Dialog content"),
+        {
+          id: "action",
+          component: { Button: { child: "broken", action: { name: "refresh", context: [] } } },
+        },
         {
           id: "broken",
           component: { MultipleChoice: { selections: { literalArray: [] }, options: "invalid" } },
@@ -352,6 +366,8 @@ suite.define(() => {
     await page.getByRole("alert").filter({ hasText: "Unable to render component" }).waitFor();
     await page.getByRole("button", { name: "Retry", exact: true }).click();
     await page.getByRole("alert").filter({ hasText: "Unable to render component" }).waitFor();
+    expect(await page.evaluate(() => Reflect.get(globalThis, "catalogActions"))).toEqual([]);
+    expect(await page.locator("dialog[open]").count()).toBe(0);
     await applyMessages(page.mainFrame(), [
       updateComponents("v0.8", [
         textComponent("v0.8", "title", "Sibling still updates"),
@@ -368,7 +384,10 @@ suite.define(() => {
       ]),
     ]);
     await page.getByText("Sibling still updates", { exact: true }).waitFor();
-    await page.getByRole("button", { name: "Recovered choice", exact: true }).waitFor();
+    await page
+      .locator("a2ui-multiplechoice")
+      .getByRole("button", { name: "Recovered choice", exact: true })
+      .waitFor();
     expect(await page.getByRole("alert").count()).toBe(0);
   });
 

@@ -19,7 +19,13 @@ export function CatalogBoundary(props) {
       fallback={(_error, reset) => (
         <div class="error" role="alert">
           Unable to render component.{" "}
-          <button type="button" onClick={reset}>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              reset();
+            }}
+          >
             Retry
           </button>
         </div>
