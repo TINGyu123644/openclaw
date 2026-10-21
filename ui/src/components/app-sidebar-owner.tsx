@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createRoot, onSettled, runWithOwner, Show } from "solid-js";
+import { createMemo, createRoot, lazy, runWithOwner, Show } from "solid-js";
 import type {
   FsListDirResult,
   WorktreeRepositoryStatus,
@@ -9,7 +9,6 @@ import type { SessionObserverDigest } from "../../../packages/gateway-protocol/s
 import { isSessionRouteId } from "../app-route-paths.ts";
 import type { NativeGatewaysSnapshot } from "../app/native-gateways.runtime.ts";
 import { beginNativeWindowDragFromTopInset } from "../app/native-window-drag.ts";
-import { createIdleImport } from "../lib/idle-import.ts";
 import { t } from "../lib/reactive/i18n.ts";
 import {
   buildCatalogSessionKey,
@@ -47,6 +46,7 @@ import type { createSidebarScroll } from "./sidebar-context-controller.ts";
 import { createSidebarMenus } from "./sidebar-menus.tsx";
 import type { SidebarNavigationCatalog } from "./sidebar-navigation-catalog.ts";
 import { createSidebarPeople, SidebarPeoplePreferences } from "./sidebar-people.ts";
+import { createSidebarRendererLoader } from "./sidebar-renderer-loader.tsx";
 import {
   captureSidebarSnapshotModel,
   isSidebarSnapshotSettled,
@@ -212,17 +212,9 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
     return snapshot && Array.isArray(snapshot.gateways) ? snapshot : null;
   }
 
-  // Catalog rows are non-startup content. Load their renderer through the same
-  // idle boundary as other sidebar chrome, then repaint when the chunk arrives.
-  private catalogRenderer: SessionCatalogGroupsRenderer | null = null;
-  readonly catalogRendererImport = createIdleImport(
+  // Catalog rows retain their idle prewarm and only render at their keyed section.
+  readonly catalogRendererImport = createSidebarRendererLoader(
     () => import("./app-sidebar-session-catalog-render.tsx"),
-    (module) => {
-      this.catalogRenderer = module.renderSessionCatalogGroups;
-      if (this.isConnected) {
-        this.invalidate();
-      }
-    },
   );
   catalogProjectGrouping: CatalogProjectGrouping = loadStoredSidebarCatalogGrouping();
 
@@ -387,12 +379,15 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
           ? host().getRouteSessionKey()
           : "";
     });
-    const LoadCatalogRenderer = () => {
-      onSettled(() => {
-        void this.catalogRendererImport.load().catch(() => undefined);
-      });
-      return null;
-    };
+    const LazyCatalog = lazy(this.catalogRendererImport.load, {
+      export: "renderSessionCatalogGroups",
+    });
+    const Boundary = this.catalogRendererImport.Boundary;
+    const Catalog: SessionCatalogGroupsRenderer = (props) => (
+      <Boundary>
+        <LazyCatalog {...props} />
+      </Boundary>
+    );
     const nativeList = (
       <SessionList
         host={host()}
@@ -400,7 +395,7 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
         sections={sections()}
         nativeSessionsHaveMore={host().sessionData.sessionsResult?.hasMore === true}
         nativeSessionsLoading={host().sessionData.sessionsLoading}
-        catalogRenderer={host().catalogRenderer}
+        catalogRenderer={Catalog}
         catalogs={{
           catalogs: catalogs(),
           basePath: host().basePath,
@@ -417,27 +412,17 @@ export class AppSidebarOwner extends AppSidebarSessionNavigationElement implemen
       />
     );
     return (
-      <>
-        <Show
-          when={
-            !host().catalogRenderer &&
-            (catalogs().length > 0 || host().sessionData.sessionCatalogRefreshStatus.error !== null)
+      <Show when={host().sidebarAgentsMode === "roster"} fallback={nativeList}>
+        <SidebarAgentRoster
+          host={host()}
+          active={
+            host().navigationVisible &&
+            host().navigationView === "sessions" &&
+            !host().contextualSidebar
           }
-        >
-          <LoadCatalogRenderer />
-        </Show>
-        <Show when={host().sidebarAgentsMode === "roster"} fallback={nativeList}>
-          <SidebarAgentRoster
-            host={host()}
-            active={
-              host().navigationVisible &&
-              host().navigationView === "sessions" &&
-              !host().contextualSidebar
-            }
-            sections={sections()}
-          />
-        </Show>
-      </>
+          sections={sections()}
+        />
+      </Show>
     );
   }
 

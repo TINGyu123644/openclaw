@@ -30,26 +30,68 @@ import {
 import { renderSidebarAgentMenu as SidebarAgentMenu } from "./app-sidebar-agent-menu.tsx";
 import { renderSidebarIdentityMenu as SidebarIdentityMenu } from "./app-sidebar-identity-menu.tsx";
 import { SidebarDropdown, renderSidebarMenuAction } from "./app-sidebar-nav-menus.tsx";
+import { renderSidebarPeopleFilterMenuForMenus } from "./app-sidebar-people-filter-menu.tsx";
+import { renderSidebarPluginNavigationMenuForMenus } from "./app-sidebar-plugin-navigation-menu.tsx";
 import { formatSidebarTimestamp } from "./app-sidebar-session-catalogs.ts";
 import { findActiveSidebarLineageRow } from "./app-sidebar-session-lookup.ts";
+import "../styles/sidebar-menus.css";
+import {
+  renderSidebarCatalogViewMenuForMenus,
+  renderSidebarSessionGroupMenuForMenus,
+  renderSidebarSessionSortMenuForMenus,
+} from "./app-sidebar-session-menu-renderers.tsx";
 import { canRetryGatewayStatus } from "./gateway-status.ts";
 import { sessionMenuReasons } from "./session-menu-access.ts";
-import "../styles/sidebar-menus.css";
 import { SessionMenu, type SessionMenuAction } from "./session-menu-solid.tsx";
 import { moveSessionFromMenu, sessionPlacementAction } from "./session-placement-action.ts";
 import { isUpdateAttentionForced } from "./sidebar-attention-dismissals.ts";
 import { isReleaseUpdateAvailable } from "./sidebar-attention-update.ts";
 import type { SidebarMenusOwner } from "./sidebar-menus-types.ts";
 import type { SidebarMenus } from "./sidebar-menus.tsx";
-
-export {
-  renderSidebarCatalogViewMenuForMenus,
-  renderSidebarSessionGroupMenuForMenus,
-  renderSidebarSessionSortMenuForMenus,
-} from "./app-sidebar-session-menu-renderers.tsx";
-export { renderSidebarPluginNavigationMenuForMenus } from "./app-sidebar-plugin-navigation-menu.tsx";
-export { renderSidebarPeopleFilterMenuForMenus } from "./app-sidebar-people-filter-menu.tsx";
 export { CatalogSessionMenu } from "./catalog-session-menu-solid.tsx";
+
+export function SidebarMenusRenderer(props: {
+  menus: SidebarMenus;
+  host: SidebarMenusOwner;
+  avatars: () => IdentityAvatars;
+  withActiveRoutes: <T>(render: () => T) => T;
+}) {
+  return (
+    <>
+      <Show when={props.menus.railPinMenuPosition} keyed>
+        {(menu) => renderSidebarRailPinMenuForMenus(props.menus, props.host, menu)}
+      </Show>
+      <Show when={props.menus.pluginNavigationMenuPosition} keyed>
+        {(menu) => renderSidebarPluginNavigationMenuForMenus(props.menus, props.host, menu)}
+      </Show>
+      <Show when={props.menus.agentMenuPosition} keyed>
+        {(menu) =>
+          props.withActiveRoutes(() =>
+            renderSidebarAgentMenuForMenus(props.menus, props.host, menu, props.avatars),
+          )
+        }
+      </Show>
+      <Show when={props.menus.identityMenuPosition} keyed>
+        {(menu) => renderSidebarIdentityMenuForMenus(props.menus, props.host, menu)}
+      </Show>
+      <Show when={props.menus.sessionMenu} keyed>
+        {(menu) => renderSidebarSessionMenuForMenus(props.menus, props.host, menu)}
+      </Show>
+      <Show when={props.menus.sessionGroupMenu} keyed>
+        {(menu) => renderSidebarSessionGroupMenuForMenus(props.menus, props.host, menu)}
+      </Show>
+      <Show when={props.menus.sessionSortMenuPosition} keyed>
+        {(menu) => renderSidebarSessionSortMenuForMenus(props.menus, props.host, menu)}
+      </Show>
+      <Show when={props.menus.peopleFilterMenuPosition} keyed>
+        {(menu) => renderSidebarPeopleFilterMenuForMenus(props.menus, props.host, menu)}
+      </Show>
+      <Show when={props.menus.catalogViewMenuPosition} keyed>
+        {(menu) => renderSidebarCatalogViewMenuForMenus(props.menus, props.host, menu)}
+      </Show>
+    </>
+  );
+}
 
 export function renderSidebarRailPinMenuForMenus(
   menus: SidebarMenus,
@@ -101,7 +143,7 @@ export function renderSidebarRailPinMenuForMenus(
   );
 }
 
-export function renderSidebarAgentMenuForMenus(
+function renderSidebarAgentMenuForMenus(
   menus: SidebarMenus,
   host: SidebarMenusOwner,
   position: NonNullable<SidebarMenus["agentMenuPosition"]>,
@@ -171,7 +213,7 @@ export function renderSidebarAgentMenuForMenus(
   );
 }
 
-export function renderSidebarIdentityMenuForMenus(
+function renderSidebarIdentityMenuForMenus(
   menus: SidebarMenus,
   host: SidebarMenusOwner,
   position: NonNullable<SidebarMenus["identityMenuPosition"]>,

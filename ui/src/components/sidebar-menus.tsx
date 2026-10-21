@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, createStore, merge, onCleanup, Show } from "solid-js";
+import { createMemo, createStore, lazy, merge, onCleanup, Show } from "solid-js";
 import type { ControlUiNavigationItem } from "../../../src/plugin-sdk/control-ui.js";
 import {
   navigationIconForRoute,
@@ -9,7 +9,6 @@ import {
 import { isSessionRouteId, pathForRoute } from "../app-route-paths.ts";
 import { canCallGatewayMethod } from "../lib/gateway-methods.ts";
 import { createIdentityAvatars } from "../lib/identity-avatar-loader.ts";
-import { createIdleImport } from "../lib/idle-import.ts";
 import { projectOwner } from "../lib/reactive/projection.ts";
 import { cancelRoutePreload, scheduleRoutePreload } from "../lib/route-preload.ts";
 import {
@@ -33,6 +32,7 @@ import type { SessionMenuWork } from "./session-menu-solid.tsx";
 import { fetchSessionMenuWork } from "./session-menu-work.ts";
 import { SESSION_MENU_OPEN_EVENT } from "./session-progress-hovercard-target.ts";
 import type { SidebarMenusOwner, SidebarRouteView } from "./sidebar-menus-types.ts";
+import { createSidebarRendererLoader } from "./sidebar-renderer-loader.tsx";
 import { Icon } from "./solid/icon.tsx";
 import type { MenuHandle } from "./solid/menu.tsx";
 
@@ -61,7 +61,6 @@ function menuPosition(x: number, y: number, width: number, height: number): Menu
 
 export type SidebarFilterMenuView = "root" | "specific-owner";
 
-type SidebarMenusRenderer = typeof import("./sidebar-menus-render.tsx");
 type CatalogMenuView = ReturnType<ReturnType<typeof createSidebarCatalogMenu>["createView"]>;
 
 type SidebarMenusState = {
@@ -80,7 +79,6 @@ type SidebarMenusState = {
   agentMenuMode: "hover" | "click";
   // Anchored by its bottom edge so the footer menu grows upward.
   identityMenuPosition: { x: number; bottom: number; width: number } | null;
-  menuRenderer: SidebarMenusRenderer | null;
 };
 
 export type SidebarMenus = ReturnType<typeof createSidebarMenus>;
@@ -109,7 +107,6 @@ export function createSidebarMenus(deps: {
     agentMenuPosition: null,
     agentMenuMode: "click",
     identityMenuPosition: null,
-    menuRenderer: null,
   });
   const triggers = new Map<MenuTrigger, HTMLElement | null>();
   const menuHandles = new Map<"catalogView" | "agent", MenuHandle>();
@@ -124,18 +121,19 @@ export function createSidebarMenus(deps: {
   let agentMenuHoverCloseTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
   let agentMenuFocusBeforeHover: HTMLElement | null = null;
   let pluginActionLifetime = new AbortController();
-  let disposed = false;
   let catalogMenuView: CatalogMenuView | undefined;
-  const menuRendererImport = createIdleImport(
+  const menuRendererImport = createSidebarRendererLoader(
     () => import("./sidebar-menus-render.tsx"),
-    (renderer) => {
-      if (!disposed) {
-        setField("menuRenderer", renderer);
-      }
-    },
+  );
+  const MenuRenderer = lazy(menuRendererImport.load, { export: "SidebarMenusRenderer" });
+  const LazyCatalogMenu = lazy(menuRendererImport.load, { export: "CatalogSessionMenu" });
+  const Boundary = menuRendererImport.Boundary;
+  const CatalogMenu = (props: Parameters<typeof LazyCatalogMenu>[0]) => (
+    <Boundary>
+      <LazyCatalogMenu {...props} />
+    </Boundary>
   );
   onCleanup(() => {
-    disposed = true;
     menus.disconnect();
   });
 
@@ -631,42 +629,29 @@ export function createSidebarMenus(deps: {
     render(view: SidebarMenusOwner): JSX.Element {
       const avatars = projectOwner(agentMenuAvatars, (owner) => owner);
       return [
-        <Show when={state.menuRenderer && state.railPinMenuPosition} keyed>
-          {(menu) => state.menuRenderer!.renderSidebarRailPinMenuForMenus(menus, view, menu)}
-        </Show>,
-        <Show when={state.menuRenderer && state.pluginNavigationMenuPosition} keyed>
-          {(menu) =>
-            state.menuRenderer!.renderSidebarPluginNavigationMenuForMenus(menus, view, menu)
+        <Show
+          when={
+            menus.railPinMenuPosition ||
+            menus.pluginNavigationMenuPosition ||
+            menus.agentMenuPosition ||
+            menus.identityMenuPosition ||
+            menus.sessionMenu ||
+            menus.sessionGroupMenu ||
+            menus.sessionSortMenuPosition ||
+            menus.peopleFilterMenuPosition ||
+            menus.catalogViewMenuPosition
           }
+        >
+          <Boundary>
+            <MenuRenderer
+              menus={menus}
+              host={view}
+              avatars={avatars.read}
+              withActiveRoutes={agentMenuAvatars.withActiveRoutes}
+            />
+          </Boundary>
         </Show>,
-        <Show when={state.menuRenderer && state.agentMenuPosition} keyed>
-          {(menu) =>
-            agentMenuAvatars.withActiveRoutes(() =>
-              state.menuRenderer!.renderSidebarAgentMenuForMenus(menus, view, menu, avatars.read),
-            )
-          }
-        </Show>,
-        <Show when={state.menuRenderer && state.identityMenuPosition} keyed>
-          {(menu) => state.menuRenderer!.renderSidebarIdentityMenuForMenus(menus, view, menu)}
-        </Show>,
-        <Show when={state.menuRenderer && state.sessionMenu} keyed>
-          {(menu) => state.menuRenderer!.renderSidebarSessionMenuForMenus(menus, view, menu)}
-        </Show>,
-        <Show when={state.menuRenderer} keyed>
-          {(renderer) => <>{menus.catalogMenuView.render(renderer.CatalogSessionMenu)}</>}
-        </Show>,
-        <Show when={state.menuRenderer && state.sessionGroupMenu} keyed>
-          {(menu) => state.menuRenderer!.renderSidebarSessionGroupMenuForMenus(menus, view, menu)}
-        </Show>,
-        <Show when={state.menuRenderer && state.sessionSortMenuPosition} keyed>
-          {(menu) => state.menuRenderer!.renderSidebarSessionSortMenuForMenus(menus, view, menu)}
-        </Show>,
-        <Show when={state.menuRenderer && state.peopleFilterMenuPosition} keyed>
-          {(menu) => state.menuRenderer!.renderSidebarPeopleFilterMenuForMenus(menus, view, menu)}
-        </Show>,
-        <Show when={state.menuRenderer && state.catalogViewMenuPosition} keyed>
-          {(menu) => state.menuRenderer!.renderSidebarCatalogViewMenuForMenus(menus, view, menu)}
-        </Show>,
+        menus.catalogMenuView.render(CatalogMenu),
       ];
     },
 
