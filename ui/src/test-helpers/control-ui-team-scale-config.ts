@@ -40,7 +40,7 @@ export function createTeamScaleConfig() {
           `synthetic-provider-${provider}`,
           {
             baseUrl: `https://provider-${provider}.example.test/v1`,
-            models: Array.from({ length: 18 }, (_, model) => ({
+            models: Array.from({ length: 18 }, (_modelValue, model) => ({
               id: `synthetic-model-${provider}-${model}`,
               name: `Synthetic provider ${provider} model ${model}`,
               reasoning: true,

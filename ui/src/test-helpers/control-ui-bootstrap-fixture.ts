@@ -4,10 +4,27 @@ import {
   type ControlUiBootstrapConfig,
 } from "../../../src/gateway/control-ui-bootstrap-contract.js";
 import { escapeHtml } from "../../../src/shared/html-escape.js";
-import type { NormalizedControlUiMockGatewayScenario } from "./control-ui-e2e.ts";
+
+type BootstrapFixtureScenario = Pick<
+  ControlUiBootstrapConfig,
+  | "basePath"
+  | "assistantName"
+  | "assistantAgentId"
+  | "serverVersion"
+  | "serverBuildId"
+  | "devGitBranch"
+  | "automaticallyFetchFavicons"
+  | "communityInvite"
+  | "terminalEnabled"
+  | "cliAgentsEnabled"
+  | "pluginAssetsRequireAuth"
+> & {
+  bootstrapPreferences?: ControlUiBootstrapConfig["preferences"];
+  methodResponses: Record<string, unknown>;
+};
 
 export function buildControlUiMockBootstrapConfig(
-  normalizedScenario: NormalizedControlUiMockGatewayScenario,
+  normalizedScenario: BootstrapFixtureScenario,
 ): ControlUiBootstrapConfig {
   const nativeCatalog = normalizedScenario.methodResponses["plugins.controlUi.list"] as
     | { plugins?: { pluginId: string }[] }

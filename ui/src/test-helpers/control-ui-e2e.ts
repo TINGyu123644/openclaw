@@ -372,7 +372,7 @@ export type ControlUiMockGatewayScenario = {
   workspaceGit?: boolean;
 };
 
-export type NormalizedControlUiMockGatewayScenario = Required<
+type NormalizedControlUiMockGatewayScenario = Required<
   Omit<
     ControlUiMockGatewayScenario,
     "nativePlugins" | "awaitInitialRoster" | "bootstrapPreferences"
